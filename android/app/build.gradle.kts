@@ -4,6 +4,7 @@ import java.io.FileInputStream
 // 🔐 Load keystore properties
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
+
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
@@ -32,13 +33,13 @@ android {
 
     defaultConfig {
         applicationId = "com.hrtoffy.app"
-        minSdk = flutter.minSdkVersion   // ✅ FIXED
+        minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
-    // ✅ RELEASE KEYSTORE (THIS IS WHAT PLAY STORE NEEDS)
+    // ✅ RELEASE SIGNING CONFIG
     signingConfigs {
         create("release") {
             keyAlias = keystoreProperties["keyAlias"] as String
@@ -50,19 +51,25 @@ android {
 
     buildTypes {
         getByName("release") {
+
+            // ✅ IMPORTANT FIX
             signingConfig = signingConfigs.getByName("release")
+
             isMinifyEnabled = false
             isShrinkResources = false
         }
     }
+
     lint {
         checkReleaseBuilds = false
         abortOnError = false
     }
 }
+
 flutter {
     source = "../.."
 }
+
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")

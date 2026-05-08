@@ -109,6 +109,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           await _showLocalNotification(
             newRow['title'] ?? 'New Notification',
             newRow['body'] ?? '',
+            payload: newRow['type'] ?? '',
           );
           fetchNotifications();
         }
@@ -119,7 +120,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   /// Local notification popup
-  Future<void> _showLocalNotification(String title, String body) async {
+  Future<void> _showLocalNotification(
+      String title,
+      String body,
+      {String? payload}
+      ) async {
+
     const androidDetails = AndroidNotificationDetails(
       'default_channel',
       'Notifications',
@@ -127,13 +133,17 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       priority: Priority.high,
       playSound: true,
     );
-    const details = NotificationDetails(android: androidDetails);
+
+    const details = NotificationDetails(
+      android: androidDetails,
+    );
 
     await flutterLocalNotificationsPlugin.show(
       DateTime.now().millisecondsSinceEpoch ~/ 1000,
       title,
       body,
       details,
+      payload: payload,
     );
   }
 
@@ -155,6 +165,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   // 🔥🔥 KEYWORD-BASED ROUTING FUNCTION (AUTO NAVIGATION)
   // -------------------------------------------------------------
   void openScreenBasedOnKeyword(Map<String, dynamic> n) {
+
     final title = (n['title'] ?? '').toString().toLowerCase();
     final body = (n['body'] ?? '').toString().toLowerCase();
     bool contains(String k) => title.contains(k) || body.contains(k);
@@ -179,6 +190,20 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         MaterialPageRoute(
           builder: (_) => PayslipScreen(
             userEmail: email,
+            userData: widget.userData,
+            fetchHrmsContext: widget.fetchHrmsContext,
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (contains("survey") || contains("feedback")) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SurveysScreen(
+            userEmail: widget.userEmail,
             userData: widget.userData,
             fetchHrmsContext: widget.fetchHrmsContext,
           ),
@@ -215,19 +240,22 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     if (contains("announcement") || contains("notice")) {
       // If your AnnouncementsScreen needs orgId/department from your user data,
       // replace this with your actual source (userData variable you have elsewhere).
-      final orgId = supabase.auth.currentUser?.userMetadata?['organization_id'];
+      final orgId = widget.userData['organization_id'];
       final dept = supabase.auth.currentUser?.userMetadata?['department'];
 
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => AnnouncementsScreen(
-            organizationId: orgId,
-            userDepartment: dept,
-            userEmail: widget.userEmail,
-            userData: widget.userData,
-            fetchHrmsContext: widget.fetchHrmsContext,
+            organizationId: orgId.toString(),
 
+            userDepartment: dept?.toString() ?? '',
+
+            userEmail: supabase.auth.currentUser?.email ?? '',
+
+            userData: {},
+
+            fetchHrmsContext: fetchHrmsContext,
           ),
         ),
       );

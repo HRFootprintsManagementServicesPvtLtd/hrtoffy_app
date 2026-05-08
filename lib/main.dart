@@ -8,6 +8,11 @@ import 'screens/splash_screen.dart';
 import 'screens/notification.dart';
 import 'screens/login_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/leaves_screen.dart';
+import 'screens/events_calendar_screen.dart';
+import 'screens/payslip_screen.dart';
+import 'screens/surveys_screen.dart';
+import 'screens/announcements_screen.dart';
 
 /// NOTIFICATION PLUGIN
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
@@ -49,6 +54,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 // ============================================================================
 // 🔵 MAIN
 // ============================================================================
+
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -101,8 +108,124 @@ Future<void> main() async {
 
   await flutterLocalNotificationsPlugin.initialize(
     initSettings,
-    onDidReceiveNotificationResponse: (response) {
-      print("🔔 Local Notification tapped");
+
+    onDidReceiveNotificationResponse: (response) async {
+
+      print("🔔 Notification clicked");
+
+      final payload = response.payload;
+
+      print("Payload => $payload");
+
+      if (payload == null) return;
+
+      final user = Supabase.instance.client.auth.currentUser;
+
+      if (user == null) return;
+
+      final employee = await Supabase.instance.client
+          .from('employee_records')
+          .select()
+          .eq('email', user.email!)
+          .single();
+      final orgId = employee['organization_id']?.toString() ?? '';
+      final department = employee['department']?.toString() ?? '';
+
+      final employeeId = employee['id'];
+
+      // =========================
+      // LEAVE
+      // =========================
+      if (payload == "leave") {
+
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => LeavesScreen(
+              email: user.email!,
+              userData: employee,
+              fetchHrmsContext: fetchHrmsContext,
+            ),
+          ),
+        );
+      }
+
+      else if (payload == "announcement") {
+
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => AnnouncementsScreen(
+              organizationId: orgId,
+              userDepartment: department,
+              userEmail: user.email!,
+              userData: employee,
+              fetchHrmsContext: fetchHrmsContext,
+            ),
+          ),
+        );
+      }
+
+      // =========================
+      // EVENT
+      // =========================
+      else if (payload == "event") {
+
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => EventsCalendarScreen(
+              email: user.email!,
+              userData: employee,
+              fetchHrmsContext: fetchHrmsContext,
+            ),
+          ),
+        );
+      }
+
+      // =========================
+      // PAYROLL
+      // =========================
+      else if (payload == "payroll") {
+
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => PayslipScreen(
+              userEmail: user.email!,
+              userData: employee,
+              fetchHrmsContext: fetchHrmsContext,
+            ),
+          ),
+        );
+      }
+
+      // =========================
+      // SURVEY
+      // =========================
+      else if (payload == "survey") {
+
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => SurveysScreen(
+              userEmail: user.email!,
+              userData: employee,
+              fetchHrmsContext: fetchHrmsContext,
+            ),
+          ),
+        );
+      }
+
+      // =========================
+      // DEFAULT
+      // =========================
+      else {
+
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => DashboardScreen(
+              email: user.email!,
+              employeeId: employeeId,
+            ),
+          ),
+        );
+      }
     },
   );
 
@@ -126,6 +249,7 @@ Map<String, dynamic> buildAttendanceSummary(List<dynamic> logs) {
     if (log['punch_time'] == null) continue;
 
     final punchTime = DateTime.parse(log['punch_time']).toLocal();
+
     final punchDate = DateTime(
       punchTime.year,
       punchTime.month,

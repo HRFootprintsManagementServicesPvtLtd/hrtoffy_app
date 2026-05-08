@@ -413,7 +413,17 @@ class TravelClaimForm extends StatefulWidget {
 class _TravelClaimFormState extends State<TravelClaimForm> {
   final supabase = Supabase.instance.client;
   final _formKey = GlobalKey<FormState>();
-  String? _tripPurpose, _tripDestination, _fromLoc, _toLoc, _travelType;
+  String? _travelType;
+
+  final TextEditingController _tripPurposeController =
+  TextEditingController();
+
+  final TextEditingController _fromLocController =
+  TextEditingController();
+
+  final TextEditingController _toLocController =
+  TextEditingController();
+
   DateTime? _fromDate, _toDate;
   List<Map<String, dynamic>> expenses = [];
   bool loading = false;
@@ -507,34 +517,159 @@ class _TravelClaimFormState extends State<TravelClaimForm> {
       // 🔥 SIMPLE PARSING (Amount + Date)
 
       // Extract Amount (₹ or numbers)
-      final amountMatch = RegExp(r'₹?\s?(\d+[.,]?\d*)')
-          .allMatches(extractedText)
-          .map((e) => double.tryParse(e.group(1)!))
-          .whereType<double>()
-          .toList();
+      // 🔥 OCR TEXT
+      String text = recognizedText.text
+          .replaceAll('\n\n', '\n')
+          .replaceAll(',', '')
+          .toLowerCase();
 
-      if (amountMatch.isNotEmpty) {
-        final maxAmount = amountMatch.reduce((a, b) => a > b ? a : b);
+      // --------------------------------------------------
+// ✅ VALIDATE TRAVEL RECEIPT
+// --------------------------------------------------
+
+      final keywords = [
+        "travel",
+        "flight",
+        "air ticket",
+        "airlines",
+        "receipt",
+        "invoice",
+        "booking",
+        "trip",
+      ];
+
+      bool isTravelReceipt =
+      keywords.any((k) => text.contains(k));
+
+      if (!isTravelReceipt) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Invalid travel receipt"),
+            backgroundColor: Colors.red,
+          ),
+        );
 
         setState(() {
-          expenses[index]['amount'] = maxAmount;
+          expenses[index]["receipt_file"] = null;
         });
+
+        await textRecognizer.close();
+        return;
       }
 
-      // Extract Date (basic format)
-      final dateMatch = RegExp(r'(\d{2}\s\w+\s\d{4})')
-          .firstMatch(extractedText);
+// --------------------------------------------------
+// ✅ TRIP PURPOSE
+// --------------------------------------------------
 
-      if (dateMatch != null) {
+      _tripPurposeController.text =
+      "Business Travel";
+      _travelType = "Domestic";
+
+      // --------------------------------------------------
+// ✅ SMART OCR EXTRACTION
+// --------------------------------------------------
+
+      final originalText = recognizedText.text;
+
+// ✅ FROM CITY
+      final fromRegex = RegExp(
+        r'from\s*[:\-]?\s*([A-Za-z\s]+?)\s*\(',
+        caseSensitive: false,
+      );
+
+      final fromResult = fromRegex.firstMatch(
+        originalText.replaceAll('\n', ' '),
+      );
+
+      if (fromResult != null) {
+        _fromLocController.text =
+            fromResult.group(1)!.trim();
+      }
+
+// ✅ TO CITY
+      final toRegex = RegExp(
+        r'to\s*:?\s*([A-Za-z\s]+)\(',
+        caseSensitive: false,
+      );
+
+      final toResult = toRegex.firstMatch(originalText);
+
+      if (toResult != null) {
+        _toLocController.text =
+            toResult.group(1)!.trim();
+      }
+
+// ✅ DATE
+      final dateRegex = RegExp(
+        r'(\d{1,2}\s+[A-Za-z]+\s+\d{4})',
+      );
+
+      final dateResult = dateRegex.firstMatch(originalText);
+
+      if (dateResult != null) {
         try {
-          final parsedDate = DateFormat("dd MMM yyyy")
-              .parse(dateMatch.group(1)!);
+          final parsedDate = DateFormat(
+            "dd MMM yyyy",
+          ).parse(dateResult.group(1)!);
 
-          setState(() {
-            expenses[index]['expense_date'] = parsedDate;
-          });
-        } catch (_) {}
+          _fromDate = parsedDate;
+          _toDate = parsedDate;
+
+          expenses[index]['expense_date'] =
+              parsedDate;
+        } catch (e) {
+          debugPrint("DATE ERROR: $e");
+        }
       }
+
+// ✅ TOTAL AMOUNT
+      double extractedAmount = 0;
+
+      final cleanText = originalText
+          .replaceAll(',', '')
+          .replaceAll('\n', ' ')
+          .replaceAll('₹', ' ');
+
+      final amountRegex = RegExp(
+        r'total\s+amount\s*([0-9]+(?:\.[0-9]+)?)',
+        caseSensitive: false,
+      );
+
+      final amountResult =
+      amountRegex.firstMatch(cleanText);
+
+      if (amountResult != null) {
+        extractedAmount =
+            double.tryParse(amountResult.group(1)!) ?? 0.0;
+      }
+
+      expenses[index]['amount'] =
+          extractedAmount;
+
+// ✅ EXPENSE TYPE
+      expenses[index]['expense_type'] =
+      "Airfare";
+
+// ✅ DESCRIPTION
+      expenses[index]['description'] =
+      "Flight ticket expense";
+
+      setState(() {});
+
+      debugPrint("OCR TEXT: $text");
+
+// --------------------------------------------------
+// ✅ VALIDATE TRAVEL RECEIPT
+// --------------------------------------------------
+
+
+
+
+
+// --------------------------------------------------
+
+
+      setState(() {});
 
       await textRecognizer.close();
     }
@@ -566,8 +701,10 @@ class _TravelClaimFormState extends State<TravelClaimForm> {
       final claimData = {
         'employee_id': emp['id'],
         'organization_id': emp['organization_id'],
-        'trip_purpose': _tripPurpose ?? '',
-        'trip_destination': _tripDestination ?? '',
+        'trip_purpose':
+        _tripPurposeController.text,
+        'trip_destination':
+        _toLocController.text,
         'trip_from_date': _fromDate?.toIso8601String(),
         'trip_to_date': _toDate?.toIso8601String(),
         'total_days': totalDays,
@@ -670,9 +807,8 @@ class _TravelClaimFormState extends State<TravelClaimForm> {
                     style: Theme.of(context).textTheme.titleSmall),
                 SizedBox(height: 12),
                 TextFormField(
+                  controller: _tripPurposeController,
                   decoration: _inputStyle("Trip Purpose"),
-                  onChanged: (val) => _tripPurpose = val,
-                  validator: (val) => (val ?? '').isEmpty ? "Required" : null,
                 ),
                 SizedBox(height: 12),
                 DropdownButtonFormField<String>(
@@ -685,13 +821,13 @@ class _TravelClaimFormState extends State<TravelClaimForm> {
                 ),
                 SizedBox(height: 12),
                 TextFormField(
+                  controller: _fromLocController,
                   decoration: _inputStyle("From (Origin)"),
-                  onChanged: (v) => _fromLoc = v,
                 ),
                 SizedBox(height: 12),
                 TextFormField(
+                  controller: _toLocController,
                   decoration: _inputStyle("To (Destination)"),
-                  onChanged: (v) => _toLoc = v,
                 ),
                 SizedBox(height: 12),
                 TextFormField(
@@ -879,6 +1015,9 @@ class _TravelClaimFormState extends State<TravelClaimForm> {
 
             SizedBox(height: 12),
             TextFormField(
+              controller: TextEditingController(
+                text: expenses[i]['description'] ?? '',
+              ),
               decoration: _inputStyle("Description"),
               onChanged: (v) => expenses[i]['description'] = v,
             ),
@@ -888,6 +1027,11 @@ class _TravelClaimFormState extends State<TravelClaimForm> {
               children: [
                 Expanded(
                   child: TextFormField(
+                    controller: TextEditingController(
+                      text: expenses[i]['amount'] == 0
+                          ? ''
+                          : expenses[i]['amount'].toString(),
+                    ),
                     decoration: _inputStyle("Amount (₹)"),
                     keyboardType:
                     TextInputType.numberWithOptions(decimal: true),
