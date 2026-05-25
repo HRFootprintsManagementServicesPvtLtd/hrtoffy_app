@@ -1225,3 +1225,250 @@ Widget notificationsSkeletonList() {
     itemBuilder: (context, index) => notificationSkeletonCard(),
   );
 }
+// ---------------------------------------------------------
+// GOALS SCREEN SKELETON
+// ---------------------------------------------------------
+
+class SkeletonGoals extends StatelessWidget {
+  const SkeletonGoals({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.builder(
+      padding: const EdgeInsets.all(14),
+      itemCount: 5,
+      itemBuilder: (_, __) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 18),
+          padding: const EdgeInsets.all(18),
+
+          decoration: BoxDecoration(
+            color: Colors.grey.shade200,
+            borderRadius: BorderRadius.circular(24),
+          ),
+
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+
+              // Title
+              Container(
+                height: 24,
+                width: 220,
+                color: Colors.grey.shade300,
+              ),
+
+              const SizedBox(height: 16),
+
+              // Chips
+              Row(
+                children: [
+                  Container(
+                    height: 30,
+                    width: 80,
+                    color: Colors.grey.shade300,
+                  ),
+
+                  const SizedBox(width: 10),
+
+                  Container(
+                    height: 30,
+                    width: 90,
+                    color: Colors.grey.shade300,
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 20),
+
+              // Description lines
+              Container(
+                height: 14,
+                width: double.infinity,
+                color: Colors.grey.shade300,
+              ),
+
+              const SizedBox(height: 8),
+
+              Container(
+                height: 14,
+                width: double.infinity,
+                color: Colors.grey.shade300,
+              ),
+
+              const SizedBox(height: 20),
+
+              // Progress bar
+              Container(
+                height: 10,
+                width: double.infinity,
+                color: Colors.grey.shade300,
+              ),
+
+              const SizedBox(height: 24),
+
+              // Milestones
+              ...List.generate(
+                3,
+                    (_) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Container(
+                    height: 14,
+                    width: double.infinity,
+                    color: Colors.grey.shade300,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------
+// MESSAGES SKELETON
+// ---------------------------------------------------------
+
+class SkeletonMessages extends StatelessWidget {
+
+  const SkeletonMessages({
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+
+    return ListView.builder(
+
+      padding:
+      const EdgeInsets.all(16),
+
+      itemCount: 8,
+
+      itemBuilder: (_, index) {
+
+        return Container(
+
+          margin:
+          const EdgeInsets.only(
+            bottom: 14,
+          ),
+
+          padding:
+          const EdgeInsets.all(14),
+
+          decoration: BoxDecoration(
+
+            color:
+            Colors.grey.shade200,
+
+            borderRadius:
+            BorderRadius.circular(
+              20,
+            ),
+          ),
+
+          child: Row(
+
+            children: [
+
+              CircleAvatar(
+                radius: 28,
+                backgroundColor:
+                Colors.grey.shade300,
+              ),
+
+              const SizedBox(
+                width: 14,
+              ),
+
+              Expanded(
+
+                child: Column(
+
+                  crossAxisAlignment:
+                  CrossAxisAlignment
+                      .start,
+
+                  children: [
+
+                    Container(
+
+                      height: 16,
+
+                      width: 120,
+
+                      decoration:
+                      BoxDecoration(
+
+                        color: Colors
+                            .grey
+                            .shade300,
+
+                        borderRadius:
+                        BorderRadius
+                            .circular(
+                          4,
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(
+                      height: 8,
+                    ),
+
+                    Container(
+
+                      height: 12,
+
+                      width: 180,
+
+                      decoration:
+                      BoxDecoration(
+
+                        color: Colors
+                            .grey
+                            .shade300,
+
+                        borderRadius:
+                        BorderRadius
+                            .circular(
+                          4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(
+                width: 12,
+              ),
+
+              Container(
+
+                height: 12,
+
+                width: 40,
+
+                decoration:
+                BoxDecoration(
+
+                  color:
+                  Colors.grey
+                      .shade300,
+
+                  borderRadius:
+                  BorderRadius
+                      .circular(4),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

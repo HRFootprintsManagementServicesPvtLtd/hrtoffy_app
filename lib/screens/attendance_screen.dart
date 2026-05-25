@@ -12,12 +12,15 @@ import '../widgets/skeleton_layouts.dart';   // for SkeletonProfile or we make a
 import 'package:table_calendar/table_calendar.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../widgets/bottom_nav_toffy_button.dart';
-
 import '../widgets/app_drawer.dart';
 import 'dashboard_screen.dart';
 import 'leaves_screen.dart';
 import 'payslip_screen.dart';
 import '../widgets/drawer_route.dart';
+import '../models/work_site.dart';
+import '../utils/geo_fence.dart';
+import 'live_tracking_screen.dart';
+import '../services/geo_tracker_service.dart';
 
 
 
@@ -328,6 +331,32 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
   };
   String selectedWorkType = 'on-duty';
 
+  Map<String, dynamic>? geoPolicy;
+
+  List<WorkSite> workSites = [];
+
+  bool geoChecking = false;
+
+  bool? geoInFence;
+
+  double? geoDistance;
+
+  String? nearestSiteName;
+
+  String geoMode = 'strict';
+
+  bool geoEnabled = false;
+
+  bool geoTrackOnly = false;
+
+  double? gpsAccuracy;
+
+  bool geoPermissionDenied = false;
+  RealtimeChannel? punchChannel;
+
+
+  LocationPermission? currentPermission;
+
   String _formatLocalTime(String timeStr) {
     try {
       final dt = DateTime.parse(timeStr).toLocal(); // UTC → IST
@@ -342,16 +371,44 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
     _startClock();
     _loadAttendance();
     _loadAttendanceRecordingMethod(); // ✅ ADD THIS LINE
+    _subscribePunchLogs();
+    _loadGeoFencePolicy();
   }
   void _startClock() {
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       setState(() => _now = DateTime.now());
     });
   }
+  void _subscribePunchLogs() {
+    final empId = widget.employee['id'];
 
+    punchChannel = supabase
+        .channel('attendance-live-$empId')
+        .onPostgresChanges(
+      event: PostgresChangeEvent.all,
+      schema: 'public',
+      table: 'attendance_punch_logs',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'employee_id',
+        value: empId.toString(),
+      ),
+      callback: (payload) async {
+        await _loadAttendance();
 
+        if (geoEnabled &&
+            workSites.isNotEmpty) {
+          await _checkGeoFence();
+        }
+      },
+    )
+        .subscribe();
+  }
   @override
   void dispose() {
+    if (punchChannel != null) {
+      supabase.removeChannel(punchChannel!);
+    }
     _clockTimer?.cancel();
     super.dispose();
   }
@@ -391,6 +448,7 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
     }
 
     LocationPermission perm = await Geolocator.checkPermission();
+    currentPermission = perm;
 
     if (perm == LocationPermission.denied) {
       perm = await Geolocator.requestPermission();
@@ -423,6 +481,102 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
       });
     } catch (e) {
       debugPrint('loadAttendanceRecordingMethod error: $e');
+    }
+  }
+
+  Future<void> _loadGeoFencePolicy() async {
+    try {
+      final orgId = widget.employee['organization_id'];
+
+      final org = await supabase
+          .from('organization_settings')
+          .select('attendance_policies')
+          .eq('organization_id', orgId)
+          .maybeSingle();
+
+      final policy = org?['attendance_policies'];
+
+      if (policy == null) return;
+
+      geoPolicy = policy;
+
+      geoEnabled = policy['geo_fencing_enabled'] == true;
+
+      geoMode = policy['geo_fencing_mode'] ?? 'strict';
+
+      final onlyForOffice =
+          policy['geo_only_for_office'] == true;
+
+      geoTrackOnly =
+          onlyForOffice &&
+              selectedWorkType != 'on-duty';
+
+      await _loadResolvedWorkSites();
+      if (geoEnabled && workSites.isNotEmpty) {
+        await _checkGeoFence();
+      }
+      if (geoEnabled && workSites.isNotEmpty) {
+        _checkGeoFence();
+      }
+
+      setState(() {});
+    } catch (e) {
+      debugPrint('geo policy error $e');
+    }
+  }
+
+  Future<void> _loadResolvedWorkSites() async {
+    try {
+      final empId = widget.employee['id'];
+
+      final branchId = widget.employee['branch_id'];
+
+      final entityId = widget.employee['entity_id'];
+
+      final orgId = widget.employee['organization_id'];
+
+      List data = [];
+
+      final direct = await supabase
+          .from('work_site_assignments')
+          .select('work_sites(*)')
+          .eq('employee_id', empId);
+
+      if (direct.isNotEmpty) {
+        data = direct.map((e) => e['work_sites']).toList();
+      } else {
+        final branchSites = await supabase
+            .from('work_sites')
+            .select()
+            .eq('branch_id', branchId)
+            .eq('is_active', true);
+
+        if (branchSites.isNotEmpty) {
+          data = branchSites;
+        } else {
+          final entitySites = await supabase
+              .from('work_sites')
+              .select()
+              .eq('entity_id', entityId)
+              .eq('is_active', true);
+
+          if (entitySites.isNotEmpty) {
+            data = entitySites;
+          } else {
+            data = await supabase
+                .from('work_sites')
+                .select()
+                .eq('organization_id', orgId)
+                .eq('is_active', true);
+          }
+        }
+      }
+
+      workSites = data
+          .map((e) => WorkSite.fromMap(e))
+          .toList();
+    } catch (e) {
+      debugPrint('load work sites error $e');
     }
   }
 
@@ -461,6 +615,53 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
       debugPrint('loadAttendance error: $e');
     } finally {
       setState(() => loading = false);
+    }
+  }
+
+  Future<Map<String, dynamic>?> _checkGeoFence() async {
+    try {
+      geoChecking = true;
+
+      setState(() {});
+
+      final pos = await _getLocation();
+
+      gpsAccuracy = pos.accuracy;
+
+      final nearest = findNearestSite(
+        userLat: pos.latitude,
+        userLng: pos.longitude,
+        sites: workSites,
+      );
+
+      if (nearest == null) {
+        return null;
+      }
+
+      final site = nearest['site'] as WorkSite;
+
+      geoDistance = nearest['distance'];
+
+      geoInFence = nearest['inFence'];
+
+      nearestSiteName = site.name;
+
+      setState(() {});
+
+      return {
+        'position': pos,
+        'site': site,
+        'distance': geoDistance,
+        'inFence': geoInFence,
+      };
+    } catch (e) {
+      geoPermissionDenied = true;
+
+      return null;
+    } finally {
+      geoChecking = false;
+
+      setState(() {});
     }
   }
   // compute hours worked and overtime and update attendance row
@@ -618,7 +819,79 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
       final orgId = emp['organization_id'];
       if (empId == null || orgId == null) throw Exception('Invalid employee data');
       // 🛰 Get location + address
-      final pos = await _getLocation();
+      Map<String, dynamic>? geoResult;
+
+      Position pos;
+
+      WorkSite? site;
+
+      bool inFence = true;
+
+      double? distance;
+
+      if (geoEnabled && !geoTrackOnly) {
+        geoResult = await _checkGeoFence();
+
+        if (geoResult == null) {
+          if (geoMode == 'strict') {
+            _showError("Location required to punch");
+            return;
+          }
+
+          pos = await _getLocation();
+        } else {
+          pos = geoResult['position'];
+
+          site = geoResult['site'];
+
+          inFence = geoResult['inFence'];
+
+          distance = geoResult['distance'];
+
+          if (!inFence && geoMode == 'strict') {
+            _showError(
+              "You are outside allowed office radius",
+            );
+            return;
+          }
+
+          if (!inFence && geoMode == 'lenient') {
+            final confirmed = await _showGeoConfirmDialog(
+              site!.name,
+              distance!,
+              site.radiusMeters,
+            );
+
+            if (!confirmed) return;
+          }
+        }
+      } else {
+        pos = await _getLocation();
+
+        if (geoTrackOnly) {
+          final nearest = findNearestSite(
+            userLat: pos.latitude,
+            userLng: pos.longitude,
+            sites: workSites,
+          );
+
+          if (nearest != null) {
+            final siteObj = nearest['site'] as WorkSite;
+
+            site = siteObj;
+
+            inFence = nearest['inFence'];
+
+            distance = nearest['distance'];
+
+            geoDistance = distance;
+
+            nearestSiteName = site.name;
+
+            geoInFence = inFence;
+          }
+        }
+      }
       final addr = await _getAddress(pos.latitude, pos.longitude);
       // 🕒 Local time formatting (IST)
       // 🕒 Get Indian Standard Time explicitly
@@ -687,12 +960,18 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
           'employee_id': empId,
           'organization_id': orgId,
           'punch_time': utcIso,
+
           'punch_type': type,
           'work_type': selectedWorkType,
           'punch_lat': pos.latitude,
           'punch_lng': pos.longitude,
           'punch_address': addr,
           'created_at': utcIso,
+          'site_id': site?.id,
+          'in_fence': inFence,
+          'distance_m': distance,
+          'accuracy_m': gpsAccuracy,
+          'punch_source': 'mobile',
         });
         // ✅ Recompute hours/overtime safely
         await _recomputeAndUpdateAttendance(attId.toString());
@@ -709,6 +988,31 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
 
 // ✅ Reload latest attendance + refresh UI
       await _loadAttendance();
+      if (type == 'punch_in') {
+
+        final shiftEndTime =
+        DateTime.now().copyWith(
+          hour: 17,
+          minute: 0,
+        );
+
+        await GeoTrackerService.startTracking(
+
+          organizationId:
+          orgId.toString(),
+
+          employeeId:
+          empId.toString(),
+
+          attendanceId:
+          attendance!['id'].toString(),
+
+          intervalMinutes: 2,
+
+          shiftEndTime:
+          shiftEndTime,
+        );
+      }
 
 // ✅ SHOW SUCCESS (GREEN)
       _showSuccess(
@@ -729,6 +1033,137 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
       setState(() => loading = false);
     }
   }
+  Future<bool> _showGeoConfirmDialog(
+      String site,
+      double distance,
+      double allowed,
+      ) async {
+    return await showDialog<bool>(
+      context: context,
+      builder: (_) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Text("You appear to be outside an allowed work site"),
+          content: Text(
+            "You are ${distance.toStringAsFixed(0)}m from $site.\n"
+                "Allowed radius is ${allowed.toStringAsFixed(0)}m.\n\n"
+                "This punch will be flagged for HR review.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context, false);
+              },
+              child: const Text("Cancel"),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context, true);
+              },
+              child: const Text("Confirm"),
+            ),
+          ],
+        );
+      },
+    ) ??
+        false;
+  }
+  Widget _geoStatusCard() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFDFF6E5),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "Geo Fence Status",
+            style: GoogleFonts.montserrat(
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          if (workSites.isEmpty)
+            Text(
+              "No work sites configured",
+              style: GoogleFonts.montserrat(),
+            ),
+
+          if (nearestSiteName != null)
+            Text(
+              "You are ${geoDistance?.toStringAsFixed(0)}m from $nearestSiteName",
+              style: GoogleFonts.montserrat(),
+            ),
+
+          const SizedBox(height: 10),
+
+          Row(
+            children: [
+              Icon(
+                geoInFence == true
+                    ? Icons.verified
+                    : geoInFence == false
+                    ? Icons.warning_amber_rounded
+                    : Icons.location_searching,
+                color:
+                geoInFence == true
+                    ? Colors.green
+                    : geoInFence == false
+                    ? Colors.orange
+                    : Colors.blueGrey,
+              ),
+
+              const SizedBox(width: 8),
+
+              Expanded(
+                child: Text(
+                  geoInFence == true
+                      ? "Inside allowed area"
+                      : geoInFence == false
+                      ? "You appear to be outside an allowed work site"
+                      : "Location not checked yet",
+
+                  style: GoogleFonts.montserrat(
+                    fontSize: 14,
+                    color: Colors.black87,
+                  ),
+
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+
+
+          if (gpsAccuracy != null &&
+              gpsAccuracy! > 100)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(
+                "Low GPS accuracy",
+                style: GoogleFonts.montserrat(
+                  color: Colors.orange,
+                ),
+              ),
+            )
+        ],
+      ),
+    );
+  }
+
   Widget _todayCard(Map<String, dynamic>? att) {
     // Derive latest punch in/out from logs dynamically
     final latestIn = punchLogs
@@ -857,7 +1292,61 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
           IconButton(onPressed: _loadAttendance, icon: const Icon(Icons.refresh, color: Colors.blue)),
         ]),
         const SizedBox(height: 10),
+        if (geoEnabled)
+          _geoStatusCard(),
+        if (geoTrackOnly)
+          Container(
+
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF7E6),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.info_outline, color: Colors.orange),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Geo not enforced today. Location will still be recorded.',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         _todayCard(att),
+        if (currentPermission == LocationPermission.denied ||
+            currentPermission == LocationPermission.deniedForever)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFEBEE),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.location_off,
+                    color: Colors.red),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Location blocked. Please enable location permission.',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
         const SizedBox(height: 16),
         DropdownButtonFormField<String>(
           value: selectedWorkType,
@@ -867,7 +1356,17 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
             border: const OutlineInputBorder(),
           ),
           items: workTypes.entries.map((e) => DropdownMenuItem(value: e.value, child: Text(e.key, style: GoogleFonts.montserrat()))).toList(),
-          onChanged: (v) => setState(() => selectedWorkType = v ?? 'on-duty'),
+          onChanged: (v) async {
+            setState(() {
+              selectedWorkType = v ?? 'on-duty';
+            });
+
+            await _loadGeoFencePolicy();
+
+            if (geoEnabled && workSites.isNotEmpty) {
+              await _checkGeoFence();
+            }
+          },
         ),
         const SizedBox(height: 16),
         // ✅ ADD THIS BLOCK EXACTLY HERE
@@ -880,9 +1379,19 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: loading
+              onPressed:
+              loading ||
+                  geoChecking ||
+                  (geoEnabled &&
+                      geoMode == 'strict' &&
+                      geoTrackOnly == false &&
+                      geoInFence == false)
                   ? null
-                  : () => _punch(hasPunchedIn ? 'punch_out' : 'punch_in'),
+                  : () => _punch(
+                hasPunchedIn
+                    ? 'punch_out'
+                    : 'punch_in',
+              ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
                 foregroundColor: Colors.white,
@@ -891,17 +1400,46 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
                   borderRadius: BorderRadius.circular(30),
                 ),
               ),
-              child: Row(
+              child: loading || geoChecking
+                  ? Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    geoChecking
+                        ? "Checking location..."
+                        : "Please wait...",
+                    style: GoogleFonts.montserrat(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              )
+                  : Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
-                    hasPunchedIn ? Icons.logout : Icons.login,
+                    hasPunchedIn
+                        ? Icons.logout
+                        : Icons.login,
                     color: Colors.white,
                     size: 22,
                   ),
                   const SizedBox(width: 10),
                   Text(
-                    hasPunchedIn ? "Punch Out Now" : "Punch In Now",
+                    hasPunchedIn
+                        ? "Punch Out Now"
+                        : "Punch In Now",
                     style: GoogleFonts.montserrat(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
@@ -916,7 +1454,60 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
 
 
         const SizedBox(height: 22),
-        Text('Today\'s Logs', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+        Row(
+          mainAxisAlignment:
+          MainAxisAlignment.spaceBetween,
+
+          children: [
+
+            Text(
+              'Today\'s Logs',
+
+              style: GoogleFonts.montserrat(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+
+            IconButton(
+
+              icon: const Icon(
+                Icons.map,
+                color: Colors.blue,
+              ),
+
+              onPressed: () {
+
+                if (punchLogs.isEmpty) {
+
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(
+
+                    const SnackBar(
+                      content: Text(
+                        'No punch records found',
+                      ),
+                    ),
+                  );
+
+                  return;
+                }
+
+                Navigator.push(
+
+                  context,
+
+                  MaterialPageRoute(
+
+                    builder: (_) =>
+                        LiveTrackingMapScreen(
+                          logs: punchLogs,
+                        ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
         const SizedBox(height: 8),
         // ======================= TODAY'S LOGS (REDESIGNED) =======================
         Column(
@@ -924,6 +1515,13 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
             final t = r['punch_time'];
             final type = r['punch_type'];
             final addr = r['punch_address'] ?? "-";
+            final hasFenceData =
+            r.containsKey('in_fence');
+
+            final inFence =
+                r['in_fence'] == true;
+
+            final distance = r['distance_m'];
 
             return Container(
               margin: const EdgeInsets.only(bottom: 12),
@@ -986,7 +1584,8 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
                           ),
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                        )
+                        ),
+                        const SizedBox(height: 6),
                       ],
                     ),
                   ),
@@ -1000,6 +1599,8 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
     );
   }
 }
+
+
    //My History Tab
 class MyHistoryTab extends StatefulWidget {
   final Map<String, dynamic> employee;
@@ -1489,6 +2090,7 @@ class _RegularizationTabState extends State<RegularizationTab> {
                   ? const CircularProgressIndicator(color: Colors.white)
                   : Text("Submit", style: GoogleFonts.montserrat(color: Colors.white)),
             ),
+
           ],
         ),
       ),
@@ -1514,3 +2116,4 @@ class _RegularizationTabState extends State<RegularizationTab> {
     );
   }
 }
+

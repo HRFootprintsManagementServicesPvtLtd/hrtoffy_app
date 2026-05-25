@@ -2,10 +2,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
-
 import '../widgets/skeleton_layouts.dart';
 import '../widgets/refreshable_screen.dart';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:intl/intl.dart';
@@ -20,76 +18,56 @@ import 'package:open_filex/open_filex.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/bottom_nav_toffy_button.dart';
-
 import 'dashboard_screen.dart';
 import 'leaves_screen.dart';
 import 'attendance_screen.dart';
 import 'payslip_screen.dart';
 import '../widgets/drawer_route.dart';
 import 'package:flutter/foundation.dart';
-
-
-
+import 'package:file_picker/file_picker.dart';
 // 🔧 FIX 1: Update MyProfileScreen widget definition
-
 class MyProfileScreen extends StatefulWidget {
   final String email;
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
-
   const MyProfileScreen({
     Key? key,
     required this.email,
     required this.userData,
     required this.fetchHrmsContext,
   }) : super(key: key);
-
   @override
   State<MyProfileScreen> createState() => _MyProfileScreenState();
 }
-
-
 class _MyProfileScreenState extends State<MyProfileScreen>
     with TickerProviderStateMixin,
         AutomaticKeepAliveClientMixin,
         RefreshableScreen<MyProfileScreen> {
   final SupabaseClient supabase = Supabase.instance.client;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-
-
   int _bottomTabIndex = 0;
-
-
   Map<String, dynamic>? _emp;
   Map<String, dynamic>? _manager;
   Map<String, dynamic>? _reviewer;
   Map<String, dynamic>? _org;
+  List<Map<String, dynamic>> gratuityNominees = [];
+  List<Map<String, dynamic>> insurancePolicies = [];
+  List<Map<String, dynamic>> employeeDocuments = [];
   String? _companyLogoUrl;
-
   TabController? _tabController;
   final ImagePicker _picker = ImagePicker();
-
   bool _hasDependenciesRunOnce = false;
-
   @override
   bool get wantKeepAlive => true;
-
-
   @override
   void initState() {
     super.initState();
-
     _tabController = TabController(length: 2, vsync: this);
-
     _tabController!.addListener(() {
       if (mounted) setState(() {});
     });
-
     startLoad(); // keep this as it is
   }
-
-
-
   // when screen becomes visible again in navigation tree, reload fresh data
   @override
   void didChangeDependencies() {
@@ -100,7 +78,6 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     }
     startLoad(); // reload data when coming back
   }
-
   // Utility: detect invalid avatar URL object names (no hard-coded domains)
   bool isInvalidAvatarUrl(String? url) {
     if (url == null || url.isEmpty) return false;
@@ -119,7 +96,6 @@ class _MyProfileScreenState extends State<MyProfileScreen>
       return false;
     }
   }
-
   @override
   Future<void> loadData() async {
     try {
@@ -139,9 +115,26 @@ class _MyProfileScreenState extends State<MyProfileScreen>
         });
         return;
       }
-
       final Map<String, dynamic> emp = Map<String, dynamic>.from(empResp);
+      final employeeId = emp['id'];
 
+      final gratuityData = await supabase
+          .from('gratuity_nominees')
+          .select()
+          .eq('employee_id', employeeId)
+          .order('created_at', ascending: false);
+
+      final insuranceData = await supabase
+          .from('employee_insurance_policies')
+          .select()
+          .eq('employee_id', employeeId);
+
+      final docsData = await supabase
+          .from('employee_documents')
+          .select()
+          .eq('employee_id', employeeId)
+          .or('document_type.like.personal_%,document_type.like.cert_%')
+          .order('uploaded_at', ascending: false);
       // --- Organization info ---
       String? orgId = emp['organization_id']?.toString();
       Map<String, dynamic>? org;
@@ -229,6 +222,15 @@ class _MyProfileScreenState extends State<MyProfileScreen>
         _companyLogoUrl = companyLogoUrl;
         _manager = manager;
         _reviewer = reviewer;
+
+        gratuityNominees =
+        List<Map<String, dynamic>>.from(gratuityData);
+
+        insurancePolicies =
+        List<Map<String, dynamic>>.from(insuranceData);
+
+        employeeDocuments =
+        List<Map<String, dynamic>>.from(docsData);
       });
 
       debugPrint('✅ Profile data loaded successfully.');
@@ -552,199 +554,72 @@ class _MyProfileScreenState extends State<MyProfileScreen>
   }
 
   Widget _buildProfileDetails() {
-    final name = (_emp?['full_name'] ?? '-').toString();
-    final designation = (_emp?['designation'] ?? '-').toString();
-    final empId = (_emp?['employee_id'] ?? '-').toString();
-    final email = (_emp?['email'] ?? '-').toString();
-    final phone = (_emp?['phone'] ?? '-').toString();
-    final blood = (_emp?['blood_group'] ?? '-').toString();
-    final dob = _formatDate(_emp?['date_of_birth']);
-    final doj = _formatDate(_emp?['date_of_joining']);
-    final orgName = (_org?['name'] ?? '-').toString();
-    final orgLocation = (_org?['location'] ?? '-').toString();
-    final managerName =
-        _manager?['full_name']?.toString() ?? _emp?['manager_name']?.toString();
-    final managerEmail =
-        _manager?['email']?.toString() ?? _emp?['manager_email']?.toString();
-    final reviewerName =
-        _reviewer?['full_name']?.toString() ??
-            _emp?['reviewer_name']?.toString();
-    final reviewerEmail =
-        _reviewer?['email']?.toString() ??
-            _emp?['reviewer_email']?.toString();
-
     return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 30),
       child: Column(
         children: [
-          webCard(
-            child: Row(
-              children: [
-                Stack(
-                  alignment: Alignment.bottomRight,
-                  children: [
-                    (_emp?['avatar_url'] != null &&
-                        _emp!['avatar_url'].toString().isNotEmpty)
-                        ? CircleAvatar(
-                      radius: 36,
-                      backgroundColor: Colors.grey.shade200,
-                      backgroundImage: CachedNetworkImageProvider(
-                        _emp!['avatar_url'],
-                      ),
-                      onBackgroundImageError: (_, __) {
-                        setState(() => _emp?['avatar_url'] = null);
-                      },
-                    )
-                        : CircleAvatar(
-                      radius: 36,
-                      backgroundColor: Colors.grey.shade200,
-                      child: Text(
-                        name.isNotEmpty ? name[0].toUpperCase() : '',
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
 
-                    // --- Edit & Delete Buttons ---
-                    Positioned(
-                      right: -6,
-                      bottom: -6,
-                      child: Row(
-                        children: [
-                          GestureDetector(
-                            onTap: _pickAndUploadAvatar,
-                            child: Container(
-                              width: 28,
-                              height: 28,
-                              decoration: BoxDecoration(
-                                color: Colors.blue,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(6),
-                                child: SvgPicture.asset(
-                                  'assets/icons/edit.svg',
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          GestureDetector(
-                            onTap: _confirmAndDeleteAvatar,
-                            child: Container(
-                              width: 28,
-                              height: 28,
-                              decoration: BoxDecoration(
-                                color: Colors.red,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(6),
-                                child: SvgPicture.asset(
-                                  'assets/icons/delete.svg',
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                  ],
-                ),
-
-                const SizedBox(width: 14),
-
-                // --- Name + Designation ---
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        name,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        designation,
-                        style: TextStyle(
-                          color: Colors.blue.shade700,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+              onPressed: _showEditDetailsDialog,
+              icon: const Icon(Icons.edit),
+              label: const Text("Edit My Details"),
             ),
           ),
 
-          webCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'BASIC INFORMATION',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 12),
+          const SizedBox(height: 16),
 
-                _infoRow('Employee ID', empId),
-                _infoRow('Email', email),
-                _infoRow('Phone', phone),
-                _infoRow('Blood Group', blood),
-                _infoRow('Date of Birth', dob),
-                _infoRow('Date of Joining', doj),
-              ],
-            ),
-          ),
-          webCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'WORK INFORMATION',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                _infoRow('Department', _emp?['department']?.toString()),
-                _infoRow('Designation', designation),
-                _infoRow('Organization', orgName),
-                _infoRow('Organization Location', orgLocation),
-              ],
-            ),
+          _sectionCard(
+            title: "Basic Information",
+            color: const Color(0xFFEAF4FF),
+            icon: Icons.badge_outlined,
+            child: _buildBasicInfo(),
           ),
 
-          webCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'BASIC INFORMATION',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                _infoRow('Employee ID', empId),
-                _infoRow('Email', email),
-                _infoRow('Phone', phone),
-                _infoRow('Blood Group', blood),
-                _infoRow('Date of Birth', dob),
-                _infoRow('Date of Joining', doj),
-              ],
+          _sectionCard(
+            title: "Work Information",
+            color: const Color(0xFFF3ECFF),
+            icon: Icons.work_outline,
+            child: _buildWorkInfo(),
+          ),
+
+          _sectionCard(
+            title: "Reporting Chain",
+            color: const Color(0xFFFFF2EB),
+            icon: Icons.account_tree_outlined,
+            child: _buildReportingChain(),
+          ),
+
+          _sectionCard(
+            title: "My Nominees (PF / Gratuity)",
+            color: const Color(0xFFFFF5EE),
+            icon: Icons.groups_outlined,
+            action: ElevatedButton.icon(
+              onPressed: _showAddNomineeDialog,
+              icon: const Icon(Icons.add),
+              label: const Text("Add Nominee"),
             ),
+            child: _buildNominees(),
+          ),
+
+          _sectionCard(
+            title: "My Insurance Nominees",
+            color: const Color(0xFFEFFFFF),
+            icon: Icons.health_and_safety_outlined,
+            child: _buildInsuranceNominees(),
+          ),
+
+          _sectionCard(
+            title: "My Documents & Certifications",
+            color: const Color(0xFFEFFBFF),
+            icon: Icons.description_outlined,
+            action: ElevatedButton.icon(
+              onPressed: _showUploadDocumentDialog,
+              icon: const Icon(Icons.upload),
+              label: const Text("Upload"),
+            ),
+            child: _buildDocuments(),
           ),
         ],
       ),
@@ -1176,6 +1051,1314 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     );
 
   }
+
+  Widget _sectionCard({
+    required String title,
+    required Color color,
+    required IconData icon,
+    required Widget child,
+    Widget? action,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 18),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+
+          LayoutBuilder(
+            builder: (context, constraints) {
+
+              final isMobile = constraints.maxWidth < 600;
+
+              return isMobile
+
+                  ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+
+                  Row(
+                    children: [
+
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: Icon(icon, color: Colors.blue),
+                      ),
+
+                      const SizedBox(width: 12),
+
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  if (action != null) ...[
+                    const SizedBox(height: 16),
+
+                    SizedBox(
+                      width: double.infinity,
+                      child: action,
+                    ),
+                  ],
+                ],
+              )
+
+                  : Row(
+                children: [
+
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Icon(icon, color: Colors.blue),
+                  ),
+
+                  const SizedBox(width: 14),
+
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+
+                  if (action != null) action,
+                ],
+              );
+            },
+          ),
+
+          const SizedBox(height: 24),
+
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _modernInfo(String label, dynamic value) {
+    return SizedBox(
+      width: 260,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+
+          Text(
+            label,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: 16,
+            ),
+          ),
+
+          const SizedBox(height: 6),
+
+          Text(
+            value?.toString() ?? '-',
+            style: TextStyle(
+              color: Colors.grey.shade700,
+              fontSize: 18,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBasicInfo() {
+    return Wrap(
+      spacing: 60,
+      runSpacing: 24,
+      children: [
+
+        _modernInfo("Employee ID", _emp?['employee_id']),
+        _modernInfo("Email", _emp?['email']),
+        _modernInfo("Phone", _emp?['phone']),
+        _modernInfo("Blood Group", _emp?['blood_group']),
+        _modernInfo("Date of Birth",
+            _formatDate(_emp?['date_of_birth'])),
+
+        _modernInfo("Date of Joining",
+            _formatDate(_emp?['date_of_joining'])),
+      ],
+    );
+  }
+
+  Widget _buildWorkInfo() {
+    return Wrap(
+      spacing: 60,
+      runSpacing: 24,
+      children: [
+
+        _modernInfo("Department", _emp?['department']),
+        _modernInfo("Designation", _emp?['designation']),
+      ],
+    );
+  }
+
+  Widget _buildReportingChain() {
+    return Column(
+      children: [
+
+        ListTile(
+          leading: const Icon(Icons.person_outline),
+          title: Text(_emp?['manager_name'] ?? '-'),
+          subtitle: Text(_emp?['manager_email'] ?? '-'),
+        ),
+
+        ListTile(
+          leading: const Icon(Icons.person_outline),
+          title: Text(_emp?['reviewer_name'] ?? '-'),
+          subtitle: Text(_emp?['reviewer_email'] ?? '-'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNominees() {
+
+    if (gratuityNominees.isEmpty) {
+      return _emptyCard(
+        "No nominees added yet. Add your PF / Gratuity nominees here.",
+      );
+    }
+
+    return Column(
+      children: gratuityNominees.map((nominee) {
+
+        return Card(
+          child: ListTile(
+            title: Text(nominee['nominee_name'] ?? ''),
+            subtitle: Text(
+              "${nominee['relationship']} • ${nominee['share_percent']}%",
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildInsuranceNominees() {
+
+    if (insurancePolicies.isEmpty) {
+      return _emptyCard(
+        "No insurance policies assigned by HR yet.",
+      );
+    }
+
+    return Column(
+      children: insurancePolicies.map((policy) {
+
+        return Card(
+          child: ListTile(
+            title: Text(policy['insurance_type'] ?? ''),
+            subtitle: Text(policy['provider_name'] ?? ''),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildDocuments() {
+
+    if (employeeDocuments.isEmpty) {
+      return _emptyCard("Nothing uploaded yet.");
+    }
+
+    return Column(
+      children: employeeDocuments.map((doc) {
+
+        return Card(
+          child: ListTile(
+            leading: const Icon(Icons.insert_drive_file),
+            title: Text(doc['document_name'] ?? ''),
+            subtitle: Text(doc['verification_status'] ?? ''),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _emptyCard(String text) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(40),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        children: [
+
+          Icon(
+            Icons.inbox_outlined,
+            size: 52,
+            color: Colors.grey.shade400,
+          ),
+
+          const SizedBox(height: 12),
+
+          Text(
+            text,
+            style: TextStyle(
+              color: Colors.grey.shade600,
+              fontSize: 18,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+  void _showAddNomineeDialog() {
+
+    final nameController = TextEditingController();
+    final relationController = TextEditingController();
+    final shareController = TextEditingController();
+    final dobController = TextEditingController();
+    final addressController = TextEditingController();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+
+        final isMobile =
+            MediaQuery.of(context).size.width < 600;
+
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          insetPadding: EdgeInsets.symmetric(
+            horizontal: isMobile ? 16 : 80,
+            vertical: 24,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: SizedBox(
+              width: 650,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+
+                  Row(
+                    mainAxisAlignment:
+                    MainAxisAlignment.spaceBetween,
+                    children: [
+
+                      const Text(
+                        "Add Nominee",
+                        style: TextStyle(
+                          fontSize: 30,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+
+                      IconButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  const Text("Name *"),
+
+                  const SizedBox(height: 8),
+
+                  TextField(
+                    controller: nameController,
+                    decoration: InputDecoration(
+                      border: OutlineInputBorder(
+                        borderRadius:
+                        BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 18),
+
+                  const Text("Relationship *"),
+
+                  const SizedBox(height: 8),
+
+                  TextField(
+                    controller: relationController,
+                    decoration: InputDecoration(
+                      hintText: 'e.g. Spouse, Mother',
+                      border: OutlineInputBorder(
+                        borderRadius:
+                        BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 18),
+
+                  Row(
+                    children: [
+
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment:
+                          CrossAxisAlignment.start,
+                          children: [
+
+                            const Text("Share %"),
+
+                            const SizedBox(height: 8),
+
+                            TextField(
+                              controller: shareController,
+                              decoration: InputDecoration(
+                                border: OutlineInputBorder(
+                                  borderRadius:
+                                  BorderRadius.circular(12),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(width: 16),
+
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment:
+                          CrossAxisAlignment.start,
+                          children: [
+
+                            const Text("Date of Birth"),
+
+                            const SizedBox(height: 8),
+
+                            TextField(
+                              controller: dobController,
+                              decoration: InputDecoration(
+                                hintText: 'dd-mm-yyyy',
+                                border: OutlineInputBorder(
+                                  borderRadius:
+                                  BorderRadius.circular(12),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 18),
+
+                  const Text("Address"),
+
+                  const SizedBox(height: 8),
+
+                  TextField(
+                    controller: addressController,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      border: OutlineInputBorder(
+                        borderRadius:
+                        BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 24),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+
+                      OutlinedButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                        },
+                        child: const Text("Cancel"),
+                      ),
+
+                      const SizedBox(width: 12),
+
+                      ElevatedButton(
+                        onPressed: () async {
+
+                          await supabase
+                              .from('gratuity_nominees')
+                              .insert({
+
+                            'employee_id': _emp?['id'],
+                            'organization_id':
+                            _emp?['organization_id'],
+                            'nominee_name':
+                            nameController.text,
+                            'relationship':
+                            relationController.text,
+                            'share_percent':
+                            shareController.text,
+                            'date_of_birth':
+                            DateFormat('yyyy-MM-dd').format(
+                              DateFormat('dd-MM-yyyy')
+                                  .parse(dobController.text),
+                            ),
+                            'address':
+                            addressController.text,
+
+                          });
+
+                          Navigator.pop(context);
+
+                          await onRefresh();
+                        },
+                        child: const Text(
+                            "Submit for Approval"),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+  void _showUploadDocumentDialog() {
+
+    String? selectedType;
+    PlatformFile? selectedFile;
+    bool uploading = false;
+
+    final titleController =
+    TextEditingController();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+
+        final isMobile =
+            MediaQuery.of(context).size.width < 600;
+
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          insetPadding: EdgeInsets.symmetric(
+            horizontal: isMobile ? 16 : 100,
+            vertical: 24,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: SizedBox(
+              width: 700,
+              child: StatefulBuilder(
+                builder: (context, setModalState) {
+
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment:
+                    CrossAxisAlignment.start,
+                    children: [
+
+                      Row(
+                        mainAxisAlignment:
+                        MainAxisAlignment.spaceBetween,
+                        children: [
+
+                          const Text(
+                            "Upload Document",
+                            style: TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+
+                          IconButton(
+                            onPressed: () {
+                              Navigator.pop(context);
+                            },
+                            icon: const Icon(Icons.close),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 20),
+
+                      const Text("Type *"),
+
+                      const SizedBox(height: 8),
+
+                      DropdownButtonFormField<String>(
+                        value: selectedType,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(
+                            borderRadius:
+                            BorderRadius.circular(12),
+                          ),
+                        ),
+                        items: const [
+
+                          DropdownMenuItem(
+                            value: 'personal_aadhaar',
+                            child: Text('Aadhaar'),
+                          ),
+
+                          DropdownMenuItem(
+                            value: 'personal_pan',
+                            child: Text('PAN'),
+                          ),
+
+                          DropdownMenuItem(
+                            value: 'personal_passport',
+                            child: Text('Passport'),
+                          ),
+
+                          DropdownMenuItem(
+                            value: 'personal_address_proof',
+                            child: Text('Address Proof'),
+                          ),
+
+                          DropdownMenuItem(
+                            value: 'personal_education',
+                            child: Text('Education Certificate'),
+                          ),
+
+                          DropdownMenuItem(
+                            value: 'personal_experience',
+                            child: Text('Experience Letter'),
+                          ),
+
+                          DropdownMenuItem(
+                            value: 'personal_other',
+                            child: Text('Other Document'),
+                          ),
+                        ],
+                        onChanged: (v) {
+                          setModalState(() {
+                            selectedType = v;
+                          });
+                        },
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      const Text("Name / Title *"),
+
+                      const SizedBox(height: 8),
+
+                      TextField(
+                        controller: titleController,
+                        decoration: InputDecoration(
+                          hintText:
+                          'e.g. AWS Solutions Architect',
+                          border: OutlineInputBorder(
+                            borderRadius:
+                            BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      const Text("File *"),
+
+                      const SizedBox(height: 8),
+
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: Colors.grey.shade300,
+                          ),
+                          borderRadius:
+                          BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+
+                            ElevatedButton(
+                              onPressed: () async {
+
+                                final result =
+                                await FilePicker.platform.pickFiles(
+                                  allowMultiple: false,
+                                  withData: true,
+                                );
+
+                                if (result != null &&
+                                    result.files.isNotEmpty) {
+
+                                  setModalState(() {
+                                    selectedFile =
+                                        result.files.first;
+                                  });
+                                }
+                              },
+                              child: const Text(
+                                "Choose File",
+                              ),
+                            ),
+
+                            const SizedBox(width: 16),
+
+                            Expanded(
+                              child: Text(
+                                selectedFile?.name ??
+                                    "No file chosen",
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 24),
+
+                  LayoutBuilder(
+                  builder: (context, constraints) {
+
+                  final isMobile =
+                  constraints.maxWidth < 500;
+
+                  return isMobile
+
+                  ? Column(
+                  children: [
+
+                  SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                  onPressed: () {
+                  Navigator.pop(context);
+                  },
+                  child: const Text("Cancel"),
+                  ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                  onPressed: () {},
+                  child: const Text(
+                  "Submit for Verification",
+                  ),
+                  ),
+                  ),
+                  ],
+                  )
+
+                      : Row(
+                  mainAxisAlignment:
+                  MainAxisAlignment.end,
+                  children: [
+
+                  OutlinedButton(
+                  onPressed: () {
+                  Navigator.pop(context);
+                  },
+                  child: const Text("Cancel"),
+                  ),
+
+                  const SizedBox(width: 12),
+
+                    ElevatedButton(
+                      onPressed: () async {
+                        setModalState(() {
+                          uploading = true;
+                        });
+
+                        try {
+                          if (titleController.text.trim().isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text("Enter document title"),
+                              ),
+                            );
+                            return;
+                          }
+
+                          if (selectedType == null) {
+
+                            ScaffoldMessenger.of(context)
+                                .showSnackBar(
+                              const SnackBar(
+                                content:
+                                Text("Select document type"),
+                              ),
+                            );
+
+                            return;
+                          }
+
+                          if (selectedFile == null) {
+
+                            ScaffoldMessenger.of(context)
+                                .showSnackBar(
+                              const SnackBar(
+                                content:
+                                Text("Choose a file"),
+                              ),
+                            );
+
+                            return;
+                          }
+
+                          final bytes =
+                              selectedFile!.bytes;
+
+                          if (bytes == null) {
+
+                            ScaffoldMessenger.of(context)
+                                .showSnackBar(
+                              const SnackBar(
+                                content:
+                                Text("Invalid file"),
+                              ),
+                            );
+
+                            return;
+                          }
+
+                          final filePath =
+                              'personal/${supabase.auth.currentUser!.id}/${DateTime.now().millisecondsSinceEpoch}_${selectedFile!.name}';
+
+                          await supabase.storage
+                              .from('employee-documents')
+                              .uploadBinary(
+                            filePath,
+                            bytes,
+                            fileOptions:
+                            FileOptions(
+                              upsert: true,
+                            ),
+                          );
+
+                          final fileUrl =
+                          supabase.storage
+                              .from('employee-documents')
+                              .getPublicUrl(filePath);
+
+                          await supabase
+                              .from('employee_documents')
+                              .insert({
+
+                            'employee_id':
+                            _emp?['id'],
+
+                            'document_type':
+                            selectedType,
+
+                            'document_name':
+                            titleController.text,
+
+                            'file_url':
+                            fileUrl,
+
+                            'file_size':
+                            selectedFile!.size,
+
+                            'uploaded_by':
+                            supabase.auth.currentUser!.id,
+
+                          });
+
+                          await onRefresh();
+
+                          Navigator.pop(context);
+
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            const SnackBar(
+                              backgroundColor: Colors.green,
+                              content: Text("✅ Document uploaded successfully"),
+                            ),
+                          );
+
+
+                        } catch (e) {
+                          setModalState(() {
+                            uploading = false;
+                          });
+
+                          debugPrint(e.toString());
+
+                          ScaffoldMessenger.of(context)
+                              .showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                e.toString(),
+                              ),
+                            ),
+                          );
+                        }
+                        finally {
+
+                          setModalState(() {
+                            uploading = false;
+                          });
+                        }
+                      },
+                      child: uploading
+                          ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                          : const Text(
+                        "Submit for Verification",
+                      ),
+                    ),
+                  ],
+                  );
+                  },
+                  ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+  void _showEditDetailsDialog() {
+
+    final fullName =
+    TextEditingController(
+      text: _emp?['full_name'] ?? '',
+    );
+
+    final dob =
+    TextEditingController(
+      text: _formatDate(
+        _emp?['date_of_birth'],
+      ),
+    );
+
+    final phone =
+    TextEditingController(
+      text: _emp?['phone'] ?? '',
+    );
+
+    final personalEmail =
+    TextEditingController(
+      text: _emp?['personal_email'] ?? '',
+    );
+
+    final nationality =
+    TextEditingController(
+      text: _emp?['nationality'] ?? '',
+    );
+
+    final location =
+    TextEditingController(
+      text: _emp?['location'] ?? '',
+    );
+
+    final currentAddress =
+    TextEditingController(
+      text: _emp?['current_address'] ?? '',
+    );
+
+    final permanentAddress =
+    TextEditingController(
+      text: _emp?['permanent_address'] ?? '',
+    );
+
+    final emergencyName =
+    TextEditingController(
+      text: _emp?['emergency_contact_name'] ?? '',
+    );
+
+    final emergencyRelation =
+    TextEditingController(
+      text:
+      _emp?['emergency_contact_relationship'] ?? '',
+    );
+
+    final emergencyPhone =
+    TextEditingController(
+      text:
+      _emp?['emergency_contact_number'] ?? '',
+    );
+
+    String gender =
+        _emp?['gender'] ?? '';
+
+    String bloodGroup =
+        _emp?['blood_group'] ?? 'O+';
+
+    String maritalStatus =
+        _emp?['marital_status'] ?? 'Single';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) {
+
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+
+            return DraggableScrollableSheet(
+              initialChildSize: 0.94,
+              maxChildSize: 0.96,
+              minChildSize: 0.85,
+              builder: (_, controller) {
+
+                return Container(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFEAF4FF),
+                    borderRadius:
+                    BorderRadius.vertical(
+                      top: Radius.circular(28),
+                    ),
+                  ),
+                  child: SingleChildScrollView(
+                    controller: controller,
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment:
+                      CrossAxisAlignment.start,
+                      children: [
+
+                        Row(
+                          children: [
+
+                            Container(
+                              padding:
+                              const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius:
+                                BorderRadius.circular(14),
+                              ),
+                              child: const Icon(
+                                Icons.edit,
+                                color: Colors.blue,
+                              ),
+                            ),
+
+                            const SizedBox(width: 12),
+
+                            const Text(
+                              "Edit My Details",
+                              style: TextStyle(
+                                fontSize: 26,
+                                fontWeight:
+                                FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 24),
+
+                        _editField(
+                          "Full Name",
+                          fullName,
+                        ),
+
+                        _editField(
+                          "Date of Birth",
+                          dob,
+                        ),
+
+                        _dropdownField(
+                          title: "Gender",
+                          value: gender,
+                          items: const [
+                            'Male',
+                            'Female',
+                            'Other',
+                          ],
+                          onChanged: (v) {
+                            setModalState(() {
+                              gender = v!;
+                            });
+                          },
+                        ),
+
+                        _dropdownField(
+                          title: "Blood Group",
+                          value: bloodGroup,
+                          items: const [
+                            'A+',
+                            'A-',
+                            'B+',
+                            'B-',
+                            'O+',
+                            'O-',
+                            'AB+',
+                            'AB-',
+                          ],
+                          onChanged: (v) {
+                            setModalState(() {
+                              bloodGroup = v!;
+                            });
+                          },
+                        ),
+
+                        _dropdownField(
+                          title: "Marital Status",
+                          value: maritalStatus,
+                          items: const [
+                            'Single',
+                            'Married',
+                          ],
+                          onChanged: (v) {
+                            setModalState(() {
+                              maritalStatus = v!;
+                            });
+                          },
+                        ),
+
+                        _editField(
+                          "Nationality",
+                          nationality,
+                        ),
+
+                        _editField(
+                          "Phone",
+                          phone,
+                        ),
+
+                        _editField(
+                          "Personal Email",
+                          personalEmail,
+                        ),
+
+                        _editField(
+                          "City / Location",
+                          location,
+                        ),
+
+                        _editField(
+                          "Current Address",
+                          currentAddress,
+                          maxLines: 4,
+                        ),
+
+                        _editField(
+                          "Permanent Address",
+                          permanentAddress,
+                          maxLines: 4,
+                        ),
+
+                        _editField(
+                          "Emergency Contact Name",
+                          emergencyName,
+                        ),
+
+                        _editField(
+                          "Emergency Relationship",
+                          emergencyRelation,
+                        ),
+
+                        _editField(
+                          "Emergency Phone",
+                          emergencyPhone,
+                        ),
+
+                        const SizedBox(height: 24),
+
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: () async {
+
+                              await supabase
+                                  .from(
+                                  'employee_records')
+                                  .update({
+
+                                'full_name':
+                                fullName.text,
+
+                                'date_of_birth':
+                                dob.text,
+
+                                'gender':
+                                gender,
+
+                                'blood_group':
+                                bloodGroup,
+
+                                'marital_status':
+                                maritalStatus,
+
+                                'nationality':
+                                nationality.text,
+
+                                'phone':
+                                phone.text,
+
+                                'personal_email':
+                                personalEmail.text,
+
+                                'location':
+                                location.text,
+
+                                'current_address':
+                                currentAddress.text,
+
+                                'permanent_address':
+                                permanentAddress.text,
+
+                                'emergency_contact_name':
+                                emergencyName.text,
+
+                                'emergency_contact_relationship':
+                                emergencyRelation.text,
+
+                                'emergency_contact_number':
+                                emergencyPhone.text,
+
+                              }).eq(
+                                'id',
+                                _emp?['id'],
+                              );
+
+                              Navigator.pop(context);
+
+                              await onRefresh();
+                            },
+                            child: const Text(
+                              "Save Changes",
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+  Widget _editField(
+      String title,
+      TextEditingController controller, {
+        int maxLines = 1,
+      }) {
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Column(
+        crossAxisAlignment:
+        CrossAxisAlignment.start,
+        children: [
+
+          Text(
+            title,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          TextField(
+            controller: controller,
+            maxLines: maxLines,
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(
+                borderRadius:
+                BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dropdownField({
+    required String title,
+    required String value,
+    required List<String> items,
+    required Function(String?) onChanged,
+  }) {
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Column(
+        crossAxisAlignment:
+        CrossAxisAlignment.start,
+        children: [
+
+          Text(
+            title,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          DropdownButtonFormField<String>(
+            value: items.contains(value)
+                ? value
+                : null,
+            items: items.map((e) {
+
+              return DropdownMenuItem(
+                value: e,
+                child: Text(e),
+              );
+            }).toList(),
+            onChanged: onChanged,
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(
+                borderRadius:
+                BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget webCard({required Widget child}) {
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 12),

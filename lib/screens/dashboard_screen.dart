@@ -34,10 +34,11 @@ import 'dart:math' as math;
 import '../widgets/refreshable_screen.dart';
 import '../widgets/skeleton_layouts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-
-
 import '../widgets/app_drawer.dart';
 import '../widgets/drawer_route.dart';
+import '../models/work_site.dart';
+import '../utils/geo_fence.dart';
+import '../services/geo_tracker_service.dart';
 
 
 // ----------- Main DashboardScreen --------------------
@@ -67,6 +68,7 @@ Widget _buildQuickCard({
   required String svgPath,
   required Color iconColor,
   required String label,
+  required Color cardColor,
   required VoidCallback onTap,
 }) {
   return GestureDetector(
@@ -76,7 +78,7 @@ Widget _buildQuickCard({
       height: 100,
       padding: const EdgeInsets.symmetric(vertical: 14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: cardColor,
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
@@ -94,7 +96,10 @@ Widget _buildQuickCard({
             svgPath,
             width: 32,
             height: 32,
-            color: iconColor,
+            colorFilter: ColorFilter.mode(
+              iconColor,
+              BlendMode.srcIn,
+            ),
           ),
           const SizedBox(height: 9),
           Text(
@@ -414,28 +419,60 @@ class _DashboardScreenState extends State<DashboardScreen> {
   };
 
   final ValueNotifier<bool> drawerNotifier = ValueNotifier(false);
+  Map<String, dynamic>? geoPolicy;
+
+  List<WorkSite> workSites = [];
+
+  bool geoChecking = false;
+
+  bool geoInFence = false;
+
+  double? geoDistance;
+
+  String? nearestSiteName;
+
+  String geoMode = 'strict';
+
+  bool geoEnabled = false;
+
+  bool geoTrackOnly = false;
+
+  double? gpsAccuracy;
+
+  bool geoPermissionDenied = false;
 
 
   @override
   void initState() {
     super.initState();
 
-
     print("DASHBOARD INITSTATE CALLED for email = ${widget.email}");
     // ✅ Initialize and fetch user data first
-    _initialize().then((_) {
+    _initialize().then((_) async {
 
-      // PRELOAD ORGANIZATION LOGO (helps first flip)
-      if (companyLogoUrl != null && companyLogoUrl!.isNotEmpty) {
-        precacheImage(NetworkImage(companyLogoUrl!), context);
+      _loadGeoFencePolicy();
+
+      // ✅ START LIVE GEO TRACKING
+      await initializeGeoTracking();
+
+      if (companyLogoUrl != null &&
+          companyLogoUrl!.isNotEmpty) {
+
+        precacheImage(
+          NetworkImage(companyLogoUrl!),
+          context,
+        );
       }
 
-      // 🔥 START LOGO ROTATION EVERY 5 SECONDS
-      logoTimer = Timer.periodic(Duration(seconds: 4), (_) {
-        setState(() {
-          showOrgLogo = !showOrgLogo;
-        });
-      });
+      logoTimer = Timer.periodic(
+        Duration(seconds: 4),
+            (_) {
+
+          setState(() {
+            showOrgLogo = !showOrgLogo;
+          });
+        },
+      );
 
       fetchNotifications();
     });
@@ -546,6 +583,96 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
     } catch (e) {
       print("⚠️ Error saving FCM token: $e");
+    }
+  }
+
+  Future<void> initializeGeoTracking() async {
+
+    try {
+
+      final currentUser =
+          supabase.auth.currentUser;
+
+      if (currentUser == null) return;
+
+      // ✅ ASK GPS PERMISSION
+      await Geolocator.requestPermission();
+
+      final employeeId =
+      userData?['id'];
+
+      final organizationId =
+      userData?['organization_id'];
+
+      if (employeeId == null ||
+          organizationId == null) {
+        return;
+      }
+
+      // ✅ FETCH HR SETTINGS
+      final result = await supabase.rpc(
+        'geo_mapping_get_my_config',
+        params: {
+          '_org': organizationId,
+        },
+      );
+
+      print("GEO CONFIG => $result");
+
+      // ✅ START TRACKING
+      if (result != null &&
+          result['enabled'] == true) {
+
+        final attendanceId =
+        await getOrCreateAttendanceId();
+
+        final shift =
+        await getAssignedShift();
+
+        if (attendanceId != null &&
+            shift != null) {
+
+          final end =
+          shift['end_time'];
+
+          final parts =
+          end.split(":");
+
+          final now = DateTime.now();
+
+          final shiftEndTime = DateTime(
+            now.year,
+            now.month,
+            now.day,
+            int.parse(parts[0]),
+            int.parse(parts[1]),
+          );
+
+          await GeoTrackerService.startTracking(
+
+            organizationId:
+            organizationId.toString(),
+
+            employeeId:
+            employeeId.toString(),
+
+            attendanceId:
+            attendanceId.toString(),
+
+            intervalMinutes:
+            result['interval_minutes'] ?? 5,
+
+            shiftEndTime:
+            shiftEndTime,
+          );
+        }
+      }
+
+    } catch (e) {
+
+      print(
+        "initializeGeoTracking error => $e",
+      );
     }
   }
   Future<List<Map<String, dynamic>>>? todayLogsFuture;
@@ -975,7 +1102,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final hours = diff.inHours;
         final minutes = diff.inMinutes.remainder(60);
         // Format total hours as HH:mm
-        final totalHours = '${hours.toString().padLeft(2, "0")}:${minutes.toString().padLeft(2, "0")}';
+        final totalHours =
+        (diff.inMinutes / 60).toStringAsFixed(2);
 
         await supabase.from('attendance').update({
           'total_hours': totalHours,
@@ -1065,6 +1193,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     return '$lat, $lng';
   }
+  Future<Position> _getLocation() async { if (!await Geolocator.isLocationServiceEnabled()) { await Geolocator.openLocationSettings(); throw Exception('Location services disabled'); } LocationPermission perm = await Geolocator.checkPermission(); if (perm == LocationPermission.denied) { perm = await Geolocator.requestPermission(); } if (perm == LocationPermission.deniedForever) { await Geolocator.openAppSettings(); throw Exception('Location permission denied'); } return await Geolocator.getCurrentPosition( desiredAccuracy: LocationAccuracy.high, ); }
+  Future<void> _loadGeoFencePolicy() async { try { final orgId = userData?['organization_id']; final org = await supabase .from('organization_settings') .select('attendance_policies') .eq('organization_id', orgId) .maybeSingle(); final policy = org?['attendance_policies']; if (policy == null) return; geoPolicy = policy; geoEnabled = policy['geo_fencing_enabled'] == true; geoMode = policy['geo_fencing_mode'] ?? 'strict'; final onlyForOffice = policy['geo_only_for_office'] == true; geoTrackOnly =
+
+
+
+      onlyForOffice &&
+          workTypeOptions[selectedWorkType] != 'on-duty'; await _loadResolvedWorkSites();
+
+  if (geoEnabled && workSites.isNotEmpty) {
+    await _checkGeoFence();
+  }
+
+  setState(() {}); } catch (e) { debugPrint('geo policy error $e'); } } Future<void> _loadResolvedWorkSites() async { try { final empId = userData?['id']; final branchId = userData?['branch_id']; final entityId = userData?['entity_id']; final orgId = userData?['organization_id']; List data = []; final direct = await supabase .from('work_site_assignments') .select('work_sites(*)') .eq('employee_id', empId); if (direct.isNotEmpty) { data = direct.map((e) => e['work_sites']).toList(); } else { final branchSites = await supabase .from('work_sites') .select() .eq('branch_id', branchId) .eq('is_active', true); if (branchSites.isNotEmpty) { data = branchSites; } else { final entitySites = await supabase .from('work_sites') .select() .eq('entity_id', entityId) .eq('is_active', true); if (entitySites.isNotEmpty) { data = entitySites; } else { data = await supabase .from('work_sites') .select() .eq('organization_id', orgId) .eq('is_active', true); } } } workSites = data .map((e) => WorkSite.fromMap(e)) .toList(); } catch (e) { debugPrint('load work sites error $e'); } } Future<Map<String, dynamic>?> _checkGeoFence()
+  async { try {
+    geoChecking = true;
+    setState(() {});
+    final pos = await _getLocation(); gpsAccuracy = pos.accuracy; final nearest = findNearestSite( userLat: pos.latitude, userLng: pos.longitude, sites: workSites, ); if (nearest == null) { return null; } final site = nearest['site'] as WorkSite; geoDistance = nearest['distance']; geoInFence = nearest['inFence']; nearestSiteName = site.name; return { 'position': pos, 'site': site, 'distance': geoDistance, 'inFence': geoInFence, }; } catch (e) {
+    geoInFence = false;
+    return null;
+  } finally {
+    geoChecking = false;
+    setState(() {});
+  }}
+  Future<bool> _showGeoConfirmDialog( String site, double distance, double allowed, ) async { return await showDialog<bool>( context: context, builder: (_) { return AlertDialog( shape: RoundedRectangleBorder( borderRadius: BorderRadius.circular(16), ), title: const Text( "You appear to be outside an allowed work site", ), content: Text( "You are ${distance.toStringAsFixed(0)}m from $site.\n" "Allowed radius is ${allowed.toStringAsFixed(0)}m.\n\n" "This punch will be flagged for HR review.", ), actions: [ TextButton( onPressed: () { Navigator.pop(context, false); }, child: const Text("Cancel"), ), ElevatedButton( onPressed: () { Navigator.pop(context, true); }, child: const Text("Confirm"), ), ], ); }, ) ?? false; }
+
   Future<Map<String, dynamic>?> getAssignedShift() async {
     final assigned = await supabase
         .from('shift_assignments')
@@ -1142,13 +1295,83 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
     setState(() => loading = true);
+    await _loadGeoFencePolicy();
     try {
       final empId = userData?['id'];
       final orgId = userData?['organization_id'];
       if (empId == null || orgId == null) throw Exception('Invalid employee data');
       // 🛰 Get device location and address
-      final pos = await getCurrentLocation();
-      final addr = await getAddress(pos['lat'], pos['lng']);
+      Map<String, dynamic>? geoResult;
+
+      Position pos;
+
+      WorkSite? site;
+
+      bool inFence = true;
+
+      double? distance;
+
+      if (geoEnabled && !geoTrackOnly) {
+
+        geoResult = await _checkGeoFence();
+
+        if (geoResult == null) {
+
+          if (geoMode == 'strict') {
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("You are outside allowed office radius"),
+              ),
+            );
+
+            return;
+          }
+
+          pos = await _getLocation();
+
+        } else {
+
+          pos = geoResult['position'];
+
+          site = geoResult['site'];
+
+          inFence = geoResult['inFence'];
+
+          distance = geoResult['distance'];
+
+          if (!inFence && geoMode == 'strict') {
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("You are outside allowed office radius"),
+              ),
+            );
+
+            return;
+          }
+
+          if (!inFence && geoMode == 'lenient') {
+
+            final confirmed = await _showGeoConfirmDialog(
+              site!.name,
+              distance!,
+              site.radiusMeters,
+            );
+
+            if (!confirmed) return;
+          }
+        }
+
+      } else {
+
+        pos = await _getLocation();
+      }
+
+      final addr = await getAddress(
+        pos.latitude,
+        pos.longitude,
+      );
       // 🕒 Get current UTC + IST
       // ✅ Local time (IST) for UI/date
       final localNow = DateTime.now();
@@ -1175,8 +1398,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           'organization_id': orgId,
           'date': date,
           'punch_in_time': utcIso,
-          'punch_in_lat': pos['lat'],
-          'punch_in_lng': pos['lng'],
+          'punch_in_lat': pos.latitude,
+          'punch_in_lng': pos.longitude,
           'punch_in_address': addr,
           'status': 'present',
           'work_type': workTypeOptions[selectedWorkType],   // 🔥 FIX
@@ -1196,8 +1419,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'punch_time': utcIso,
         'punch_type': 'punch_in',
         'work_type': workTypeOptions[selectedWorkType],
-        'punch_lat': pos['lat'],
-        'punch_lng': pos['lng'],
+        'punch_lat': pos.latitude,
+        'punch_lng': pos.longitude,
+        'site_id': site?.id,
+        'in_fence': inFence,
+        'distance_m': distance,
+        'accuracy_m': gpsAccuracy,
+        'punch_source': 'mobile',
         'punch_address': addr,
         'created_at': utcIso,
       });
@@ -1219,6 +1447,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
   Future<void> handlePunchOutLog() async {
+
     if (isBiometricOnly) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1228,13 +1457,72 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
     setState(() => loading = true);
+    await _loadGeoFencePolicy();
     try {
       final empId = userData?['id'];
       final orgId = userData?['organization_id'];
       if (empId == null || orgId == null) throw Exception('Invalid employee data');
       // 🛰 Get location and address
-      final pos = await getCurrentLocation();
-      final addr = await getAddress(pos['lat'], pos['lng']);
+      Map<String, dynamic>? geoResult;
+
+      Position pos;
+
+      WorkSite? site;
+
+      bool inFence = true;
+
+      double? distance;
+
+      if (geoEnabled && !geoTrackOnly) {
+
+        geoResult = await _checkGeoFence();
+
+        if (geoResult == null) {
+
+          if (geoMode == 'strict') {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("You are outside allowed office radius"),
+              ),
+            );
+            return;
+          }
+
+          pos = await _getLocation();
+
+        } else {
+
+          pos = geoResult['position'];
+
+          site = geoResult['site'];
+
+          inFence = geoResult['inFence'];
+
+          distance = geoResult['distance'];
+
+          if (!inFence && geoMode == 'strict') {
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("You are outside allowed office radius"),
+              ),
+            );
+
+            return;
+          }
+
+          if (!inFence && geoMode == 'lenient') { final confirmed = await _showGeoConfirmDialog( site!.name, distance!, site.radiusMeters, ); if (!confirmed) return; }
+        }
+
+      } else {
+
+        pos = await _getLocation();
+      }
+
+      final addr = await getAddress(
+        pos.latitude,
+        pos.longitude,
+      );
       // 🕒 Get current UTC + IST
       // ✅ Local IST for UI
       final localNow = DateTime.now();
@@ -1272,20 +1560,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
           return; // ⛔ STOP execution
         }
       }
-      if (attendance.isEmpty) throw Exception('No attendance record found for today');
+      if (attendance.isEmpty) {
+
+        final created =
+        await supabase
+            .from('attendance')
+            .insert({
+
+          'employee_id': empId,
+
+          'organization_id': orgId,
+
+          'date': date,
+
+          'status': 'present',
+
+          'created_at':
+          DateTime.now()
+              .toUtc()
+              .toIso8601String(),
+
+        })
+            .select()
+            .single();
+
+        attendance = [created];
+      }
       final attId = attendance.first['id'];
       // 🔹 Update punch-out time in attendance
       await supabase
           .from('attendance')
           .update({
         'punch_out_time': utcIso,
-        'punch_out_lat': pos['lat'],
-        'punch_out_lng': pos['lng'],
+        'punch_out_lat': pos.latitude,
+        'punch_out_lng': pos.longitude,
         'punch_out_address': addr,
         'updated_at': utcIso,
       })
           .eq('id', attId);
-      // 🔹 Log Punch Out
+      // Log Punch Out
       await supabase.from('attendance_punch_logs').insert({
         'attendance_id': attId,
         'employee_id': empId,
@@ -1293,8 +1606,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'punch_time': utcIso,
         'punch_type': 'punch_out',
         'work_type': workTypeOptions[selectedWorkType],
-        'punch_lat': pos['lat'],
-        'punch_lng': pos['lng'],
+        'punch_lat': pos.latitude,
+        'punch_lng': pos.longitude,
+        'site_id': site?.id,
+        'in_fence': inFence,
+        'distance_m': distance,
+        'accuracy_m': gpsAccuracy,
+        'punch_source': 'mobile',
         'punch_address': addr,
         'created_at': utcIso,
       });
@@ -1722,13 +2040,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
 
     // ✅ ADD THIS BLOCK (VERY IMPORTANT)
-    if (loading || userData == null || orgDetails == null) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
+
 
     // ✅ KEEP YOUR EXISTING CODE BELOW
     final orgName = orgDetails?['name'] ?? "--";
@@ -1742,8 +2054,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         key: _scaffoldKey,
         backgroundColor: Colors.white,
         endDrawer: AppDrawer(
-          userEmail: widget.email!,
-          userData: userData!,
+          userEmail: widget.email,
+          userData: userData ?? {},
           companyLogoUrl: companyLogoUrl,
           fetchHrmsContext: fetchHrmsContext,
           currentRoute: DrawerRoute.dashboard,
@@ -1841,8 +2153,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               MaterialPageRoute(
                                 builder: (_) => NotificationsScreen(
                                   employeeId: empId,
-                                  userEmail: widget.email!,
-                                  userData: userData!,
+                                  userEmail: widget.email,
+                                  userData: userData ?? {},
                                   fetchHrmsContext: fetchHrmsContext,
                                 ),
                               ),
@@ -2031,39 +2343,87 @@ class _DashboardScreenState extends State<DashboardScreen> {
     const SizedBox(height: 16),
 
     // ===================== SINGLE FULL-WIDTH BUTTON =====================
-    SizedBox(
-    width: double.infinity,
-    child: ElevatedButton(
-    onPressed: (!loading)
-    ? () async {
-    await handlePunchInLog();
-    await fetchLatestPunchLogs();
-    setState(() {});
-    }
-        : null,
-    style: ElevatedButton.styleFrom(
-    backgroundColor:
-    (!loading) ? Colors.blue : Colors.grey.shade300,
-    foregroundColor: Colors.white,
-    minimumSize: const Size.fromHeight(52),
-    shape: RoundedRectangleBorder(
-    borderRadius: BorderRadius.circular(30),
-    ),
-    ),
-    child: Row(
-    mainAxisAlignment: MainAxisAlignment.center,
-    children: const [
-    Icon(Icons.login, size: 22),
-    SizedBox(width: 10),
-    Text(
-    "Punch In Now",
-    style: TextStyle(
-    fontSize: 16, fontWeight: FontWeight.w600),
-    ),
-    ],
-    ),
-    ),
-    ),
+      SizedBox(
+        width: double.infinity,
+        child: ElevatedButton(
+          onPressed: geoChecking
+              ? null
+              : (geoEnabled &&
+              geoMode == 'strict' &&
+              !geoInFence)
+              ? null
+              : (!loading)
+              ? () async {
+            await handlePunchInLog();
+            await fetchLatestPunchLogs();
+            setState(() {});
+          }
+              : null,
+
+          style: ElevatedButton.styleFrom(
+            backgroundColor:
+            (!loading) ? Colors.blue : Colors.grey.shade300,
+            foregroundColor: Colors.white,
+            minimumSize: const Size.fromHeight(52),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(30),
+            ),
+          ),
+
+          child: loading
+              ? const SizedBox(
+            height: 22,
+            width: 22,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white,
+            ),
+          )
+              : Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(Icons.login, size: 22),
+              SizedBox(width: 10),
+              Text(
+                "Punch In Now",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+
+      if (geoEnabled &&
+          geoMode == 'strict' &&
+          !geoInFence)
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.location_off,
+                color: Colors.red,
+                size: 18,
+              ),
+
+              const SizedBox(width: 8),
+
+              Expanded(
+                child: Text(
+                  "You are outside allowed office radius. Move near your office location to enable punch in.",
+                  style: GoogleFonts.montserrat(
+                    color: Colors.red,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
     ],
     );
     }
@@ -2198,17 +2558,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     SizedBox(
     width: double.infinity,
     child: ElevatedButton(
-    onPressed: (!loading)
-    ? () async {
-    if (!punchedInNow) {
-    await handlePunchInLog();
-    } else {
-    await handlePunchOutLog();
-    }
-    await fetchLatestPunchLogs();
-    setState(() {});
-    }
-        : null,
+      onPressed: geoChecking
+          ? null
+          : (geoEnabled &&
+          geoMode == 'strict' &&
+          !geoInFence)
+          ? null
+          : (!loading)
+          ? () async {
+        await handlePunchOutLog();
+        await fetchLatestPunchLogs();
+        setState(() {});
+      }
+          : null,
     style: ElevatedButton.styleFrom(
     backgroundColor: (!loading)
     ? Colors.blue
@@ -2219,23 +2581,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
     borderRadius: BorderRadius.circular(30),
     ),
     ),
-    child: Row(
-    mainAxisAlignment: MainAxisAlignment.center,
-    children: [
-    Icon(
-    (!punchedInNow) ? Icons.login : Icons.logout,
-    size: 22,
-    ),
-    const SizedBox(width: 10),
-    Text(
-    (!punchedInNow)
-    ? "Punch In Now"
-        : "Punch Out Now",
-    style: const TextStyle(
-    fontSize: 16, fontWeight: FontWeight.w600),
-    ),
-    ],
-    ),
+      child: loading
+          ? const SizedBox(
+        height: 22,
+        width: 22,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: Colors.white,
+        ),
+      )
+          : Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: const [
+          Icon(Icons.logout, size: 22),
+          SizedBox(width: 10),
+          Text(
+            "Punch Out",
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     ),
     ),
     ],
@@ -2254,6 +2622,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   _buildQuickCard(
                                     svgPath: "assets/icons/leaves.svg",
                                     iconColor: Colors.blue,
+                                    cardColor: const Color(0xFFEAF4FF),
                                     label: "Leave",
                                     onTap: () {
                                       Navigator.push(
@@ -2271,6 +2640,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   _buildQuickCard(
                                     svgPath: "assets/icons/payroll.svg",
                                     iconColor: Colors.green,
+                                    cardColor: const Color(0xFFEFFBF1),
                                     label: "Payslip",
                                     onTap: () {
                                       Navigator.push(
@@ -2287,7 +2657,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   ),
                                   _buildQuickCard(
                                     svgPath: "assets/icons/attendance.svg",
-                                    iconColor: Colors.blueAccent,
+                                    iconColor: Colors.indigo,
+                                    cardColor: const Color(0xFFF3EEFF),
                                     label: "Time",
                                     onTap: () {
                                       Navigator.push(
@@ -2335,7 +2706,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     margin: const EdgeInsets.only(bottom: 16),
                                     padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
                                     decoration: BoxDecoration(
-                                      color: Colors.white,
+                                      color: const Color(0xFFFFF4EA),
                                       borderRadius: BorderRadius.circular(18),
                                       boxShadow: [
                                         BoxShadow(
@@ -2440,7 +2811,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               Container(
                                 width: double.infinity,
                                 decoration: BoxDecoration(
-                                  color: Color(0xFFF9F9F9),
+                                  color: const Color(0xFFEFFCF5),
                                   border: Border.all(color: kBorderColor),
                                   borderRadius: BorderRadius.circular(12),
                                 ),
@@ -2751,6 +3122,7 @@ class RotationYTransition extends AnimatedWidget {
       : super(listenable: turns);
   @override
   Widget build(BuildContext context) {
+
     final animation = listenable as Animation<double>;
     final double angle = animation.value * 3.14;
 

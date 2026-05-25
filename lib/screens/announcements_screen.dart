@@ -12,18 +12,12 @@ import 'leaves_screen.dart';
 import 'attendance_screen.dart';
 import 'payslip_screen.dart';
 import '../widgets/drawer_route.dart';
-
-
-
 class AnnouncementsScreen extends StatefulWidget {
   final String organizationId;
   final String userDepartment;
-
-
   final String userEmail;
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
-
   const AnnouncementsScreen({
     Key? key,
     required this.organizationId,

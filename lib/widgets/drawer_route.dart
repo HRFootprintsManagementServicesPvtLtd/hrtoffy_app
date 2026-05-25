@@ -17,8 +17,12 @@ enum DrawerRoute {
   tax,
 
   // ENGAGEMENT & ADMIN
+  messages,
   announcements, // ✅ ADDED
   events,
   surveys,
   faqs,
+
+  //performance
+  performance,
 }

@@ -19,6 +19,8 @@ import '../screens/surveys_screen.dart';
 import '../screens/faqs_screen.dart';
 import '../screens/login_screen.dart';
 import 'drawer_route.dart';
+import '../screens/goals_screen.dart';
+import '../screens/messages_screen.dart';
 
 
 class AppDrawer extends StatefulWidget {
@@ -226,8 +228,6 @@ class _AppDrawerState extends State<AppDrawer> {
               ),
             ),
           ),
-
-
           _svg(
             context,
             "assets/icons/loans.svg",
@@ -242,7 +242,6 @@ class _AppDrawerState extends State<AppDrawer> {
                   ),
             ),
           ),
-
           _svg(
             context,
             "assets/icons/travel.svg",
@@ -258,7 +257,6 @@ class _AppDrawerState extends State<AppDrawer> {
 
                 ),
           ),
-
           _svg(
             context,
             "assets/icons/tax.svg",
@@ -274,8 +272,38 @@ class _AppDrawerState extends State<AppDrawer> {
             ),
           ),
 
+          _header("PERFORMANCE"),
+          _svg(
+            context,
+            "assets/icons/goals1.svg",
+            "Goals",
+            DrawerRoute.performance,
+                () => _go(
+              context,
+                  GoalsScreen(
+                    userEmail: widget.userEmail,
+                    userData: widget.userData,
+                    fetchHrmsContext: widget.fetchHrmsContext,
+                  ),
+            ),
+          ),
 
-          _header("ENGAGEMENT & ADMIN"),
+
+          _header("ENGAGE"),
+          _svg(
+            context,
+            "assets/icons/messages.svg",
+            "Messages",
+            DrawerRoute.messages,
+                () => _go(
+              context,
+              MessagesScreen(
+                userEmail: widget.userEmail,
+                userData: widget.userData,
+                fetchHrmsContext: widget.fetchHrmsContext,
+              ),
+            ),
+          ),
           _icon(
             context,
             Icons.campaign_outlined,
