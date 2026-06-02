@@ -3,7 +3,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-
+import 'package:provider/provider.dart';
+import 'providers/role_provider.dart';
 import 'screens/splash_screen.dart';
 import 'screens/notification.dart';
 import 'screens/login_screen.dart';
@@ -232,7 +233,14 @@ Future<void> main() async {
   // Auto-login check
   final session = Supabase.instance.client.auth.currentSession;
 
-  runApp(MyApp(isLoggedIn: session != null));
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => RoleProvider(),
+      child: MyApp(
+        isLoggedIn: session != null,
+      ),
+    ),
+  );
 }
 
 Map<String, dynamic> buildAttendanceSummary(List<dynamic> logs) {

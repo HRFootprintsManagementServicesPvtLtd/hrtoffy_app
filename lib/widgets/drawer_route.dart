@@ -15,6 +15,7 @@ enum DrawerRoute {
   loans,
   travel,
   tax,
+  expenses,
 
   // ENGAGEMENT & ADMIN
   messages,
@@ -25,4 +26,13 @@ enum DrawerRoute {
 
   //performance
   performance,
+
+  // MANAGER ROUTES
+  approvals,
+  compliance,
+  settings,
+  howToGuide,
+  askToffy,
+  engage,
+  extendedModules,
 }

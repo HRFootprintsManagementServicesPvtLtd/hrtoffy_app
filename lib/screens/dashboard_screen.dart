@@ -834,6 +834,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       final unread = res.where((n) => n['read'] == false).length;
 
+      if (!mounted) return;
       setState(() {
         notifications = List<Map<String, dynamic>>.from(res);
         unreadCount = unread;
@@ -1647,6 +1648,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           .lte('punch_time', '$todayStr 23:59:59')
           .order('punch_time', ascending: true);
 
+      if (!mounted) return;
       if (logs.isNotEmpty) {
         final last = logs.last;
 
@@ -2433,10 +2435,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // =============================================================
     final lastIn = logs.lastWhere(
     (e) => e['punch_type'] == 'punch_in',
-    orElse: () => {});
+    orElse: () => <String, dynamic>{});
     final lastOut = logs.lastWhere(
     (e) => e['punch_type'] == 'punch_out',
-    orElse: () => {});
+    orElse: () => <String, dynamic>{});
     final punchedInNow =
     logs.isNotEmpty && logs.last['punch_type'] == 'punch_in';
 

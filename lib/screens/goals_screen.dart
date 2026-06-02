@@ -127,6 +127,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
       endDrawer: AppDrawer(
         userEmail: widget.userEmail,
         userData: widget.userData,
+
         fetchHrmsContext: widget.fetchHrmsContext!,
         currentRoute: DrawerRoute.performance,
         companyLogoUrl: null,
@@ -165,10 +166,8 @@ class _GoalsScreenState extends State<GoalsScreen> {
           children: [
             const SizedBox(height: 14),
 
+
             // ================= FILTER TABS =================
-
-
-
             // ================= GOALS LIST =================
             Padding(
               padding: const EdgeInsets.symmetric(
@@ -187,9 +186,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
                 ],
               ),
             ),
-
             const SizedBox(height: 18),
-
             Expanded(
               child: filteredGoals.isEmpty
                   ? Center(
@@ -228,17 +225,14 @@ class _GoalsScreenState extends State<GoalsScreen> {
                   final progress =
                       goal['progress_percentage'] ??
                           0;
-
                   final milestones =
                       (goal['milestones']
                       as List?) ??
                           [];
-
                   return Container(
                     margin:
                     const EdgeInsets.only(
                         bottom: 18),
-
                     decoration: BoxDecoration(
                       color: pastelColors[
                       index % pastelColors.length
@@ -262,7 +256,6 @@ class _GoalsScreenState extends State<GoalsScreen> {
                       crossAxisAlignment:
                       CrossAxisAlignment
                           .start,
-
                       children: [
                         Padding(
                           padding:

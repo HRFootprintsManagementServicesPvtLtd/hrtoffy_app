@@ -21,6 +21,9 @@ import '../screens/login_screen.dart';
 import 'drawer_route.dart';
 import '../screens/goals_screen.dart';
 import '../screens/messages_screen.dart';
+import 'package:provider/provider.dart';
+import '../providers/role_provider.dart';
+import '../screens/manager/manager_dashboard_screen.dart';
 
 
 class AppDrawer extends StatefulWidget {
@@ -58,6 +61,16 @@ class _AppDrawerState extends State<AppDrawer> {
   Widget build(BuildContext context) {
     final orgId = widget.userData['organization_id'];
     final dept = widget.userData['department'];
+    final roleProvider =
+    Provider.of<RoleProvider>(context);
+
+    final currentRole =
+        roleProvider.activeRole;
+
+
+    final hasManagerRole =
+        widget.userData['emp_role'] ==
+            'manager';
 
     return Drawer(
       width: 290,
@@ -321,24 +334,6 @@ class _AppDrawerState extends State<AppDrawer> {
             ),
           ),
 
-
-
-          _svg(
-            context,
-            "assets/icons/events.svg",
-            "Events & Meetings",
-            DrawerRoute.events,
-                () => _go(
-              context,
-                  EventsCalendarScreen(
-                    email: widget.userEmail,
-                    userData: widget.userData,
-                    fetchHrmsContext: widget.fetchHrmsContext,
-                  ),
-
-                ),
-          ),
-
           _svg(
             context,
             "assets/icons/surveys.svg",
@@ -370,6 +365,74 @@ class _AppDrawerState extends State<AppDrawer> {
 
                 ),
           ),
+
+          const SizedBox(height: 10),
+
+          if (hasManagerRole)
+            ListTile(
+              leading: Icon(
+                currentRole == 'employee'
+                    ? Icons.admin_panel_settings
+                    : Icons.person,
+                color: Colors.blueAccent,
+              ),
+
+              title: Text(
+                currentRole == 'employee'
+                    ? "Switch to Manager"
+                    : "Switch to Employee",
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+
+              onTap: () {
+
+                Navigator.pop(context);
+
+                if (currentRole == 'employee') {
+
+                  roleProvider.switchRole(
+                    'manager',
+                  );
+
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          ManagerDashboardScreen(
+
+                        userEmail:
+                        widget.userEmail,
+
+                        userData:
+                        widget.userData,
+
+                        fetchHrmsContext:
+                        widget.fetchHrmsContext,),
+                    ),
+                  );
+
+                } else {
+
+                  roleProvider.switchRole(
+                    'employee',
+                  );
+
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => DashboardScreen(
+                        email: widget.userEmail,
+                        employeeId:
+                        widget.userData['id']
+                            .toString(),
+                      ),
+                    ),
+                  );
+                }
+              },
+            ),
 
 
           const Divider(),

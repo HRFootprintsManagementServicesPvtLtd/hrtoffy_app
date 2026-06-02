@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dashboard_screen.dart';
 import '../main.dart';
 import 'package:geolocator/geolocator.dart';
+import 'manager/manager_dashboard_screen.dart';
 
 
 // ------------------------------
@@ -86,7 +87,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       final empData = await supabase
           .from("employee_records")
-          .select("id, employee_id, organization_id")
+          .select("id, employee_id, organization_id, emp_role")
           .eq("email", userEmail)
           .maybeSingle();
       if (empData == null) {
@@ -133,16 +134,45 @@ class _LoginScreenState extends State<LoginScreen> {
       /// 4️⃣ FCM SETUP
       await FirebaseNotificationService.setupFCM(userEmail: userEmail);
       /// 5️⃣ NAVIGATE TO DASHBOARD
+      /// 5️⃣ NAVIGATE BASED ON ROLE
+
+      final empRole =
+      empData["emp_role"]
+          ?.toString()
+          .toLowerCase();
+
       if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => DashboardScreen(
-            email: userEmail,
-            employeeId: uuid.toString(),
+
+      if (empRole == "manager") {
+
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) =>
+                ManagerDashboardScreen(
+
+                  userEmail:
+                  _emailController.text.trim(),
+
+                ),
           ),
-        ),
-      );
+        );
+
+      } else {
+
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) =>
+                ManagerDashboardScreen(
+
+                  userEmail:
+                  _emailController.text.trim(),
+
+                ),
+          ),
+        );
+      }
     } on AuthException catch (e) {
       setState(() => _error = e.message);
     } catch (e) {

@@ -973,12 +973,13 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
           'accuracy_m': gpsAccuracy,
           'punch_source': 'mobile',
         });
+        //
+        //
         // ✅ Recompute hours/overtime safely
         await _recomputeAndUpdateAttendance(attId.toString());
       } else {
         debugPrint('⚠️ Attendance ID missing after punch ${type == 'punch_in' ? 'in' : 'out'} insert');
       }
-
       // ✅ Notify user
 // ✅ Update punch button state immediately
       // ✅ Update punch button state immediately
@@ -1181,13 +1182,13 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
     final lastPunchInAddr = punchLogs.isNotEmpty
         ? punchLogs.lastWhere(
           (r) => r['punch_type'] == 'punch_in',
-      orElse: () => {},
+      orElse: () => <String, dynamic>{},
     )['punch_address']
         : null;
     final lastPunchOutAddr = punchLogs.isNotEmpty
         ? punchLogs.lastWhere(
           (r) => r['punch_type'] == 'punch_out',
-      orElse: () => {},
+      orElse: () => <String, dynamic>{},
     )['punch_address']
         : null;
     return Card(
