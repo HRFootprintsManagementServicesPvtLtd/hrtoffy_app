@@ -6,11 +6,13 @@ import 'package:intl/intl.dart';
 class BenefitApprovalPanel extends StatefulWidget {
   final Map<String, dynamic> userData;
   final VoidCallback onBack;
+  final String? filterCategory;
 
   const BenefitApprovalPanel({
     super.key,
     required this.userData,
     required this.onBack,
+    this.filterCategory,
   });
 
   @override
@@ -82,16 +84,21 @@ class _BenefitApprovalPanelState extends State<BenefitApprovalPanel> {
 
     try {
       // STEP 3: Fetch benefit_claims with joins
-      final res = await supabase
+      var query = supabase
           .from('benefit_claims')
           .select('''
             *,
-            employee:employee_id (full_name, employee_id),
+            employee_records!benefit_claims_employee_id_fkey (full_name, employee_id),
             catalog:benefit_id (benefit_name)
           ''')
           .inFilter('employee_id', teamMemberIds)
-          .inFilter('status', ['pending', 'approved', 'rejected'])
-          .order('created_at', ascending: false);
+          .inFilter('status', ['pending', 'approved', 'rejected']);
+      
+      if (widget.filterCategory != null && widget.filterCategory == 'esi') {
+        query = query.eq('is_esi_claim', true);
+      }
+
+      final res = await query.order('created_at', ascending: false);
 
       if (mounted) setState(() => claims = res);
     } catch (e) {
@@ -102,7 +109,6 @@ class _BenefitApprovalPanelState extends State<BenefitApprovalPanel> {
 
   Future<void> handleAction(dynamic claim, String action, String comments) async {
     if (managerProfile == null) return;
-    final myId = managerProfile!['id'];
 
     try {
       final status = action == 'approve' ? 'approved' : 'rejected';
@@ -196,7 +202,7 @@ class _BenefitApprovalPanelState extends State<BenefitApprovalPanel> {
             DataColumn(label: _headerText("Actions")),
           ],
           rows: claims.map((claim) {
-            final emp = claim['employee'] ?? {};
+            final emp = claim['employee_records'] ?? {};
             final catalog = claim['catalog'] ?? {};
             final status = (claim['status'] ?? 'pending').toString().toLowerCase();
 
@@ -255,7 +261,7 @@ class _BenefitApprovalPanelState extends State<BenefitApprovalPanel> {
 
   void _showReviewDialog(dynamic claim) {
     final controller = TextEditingController();
-    final emp = claim['employee'] ?? {};
+    final emp = claim['employee_records'] ?? {};
     final catalog = claim['catalog'] ?? {};
     
     showDialog(
@@ -325,7 +331,7 @@ class _BenefitApprovalPanelState extends State<BenefitApprovalPanel> {
   }
 
   void _showViewDialog(dynamic claim) {
-    final emp = claim['employee'] ?? {};
+    final emp = claim['employee_records'] ?? {};
     final catalog = claim['catalog'] ?? {};
     showDialog(
       context: context,

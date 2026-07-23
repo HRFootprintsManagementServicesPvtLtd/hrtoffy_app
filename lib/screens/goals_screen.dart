@@ -8,7 +8,9 @@ import 'dashboard_screen.dart';
 import 'leaves_screen.dart';
 import 'attendance_screen.dart';
 import 'payslip_screen.dart';
+import 'notification.dart';
 import '../widgets/skeleton_layouts.dart';
+import '../widgets/employee_ui.dart';
 
 class GoalsScreen extends StatefulWidget {
   final String userEmail;
@@ -28,24 +30,10 @@ class GoalsScreen extends StatefulWidget {
 
 class _GoalsScreenState extends State<GoalsScreen> {
   final supabase = Supabase.instance.client;
-  final GlobalKey<ScaffoldState> _scaffoldKey =
-  GlobalKey<ScaffoldState>();
-
-  int _bottomTabIndex = 4;
-  final List<Color> pastelColors = [
-    const Color(0xFFCCC9C9),
-    const Color(0xFFE8F7EE),
-    const Color(0xFFEAF2FF),
-    const Color(0xFFFFEEF2),
-    const Color(0xFFF4EEFF),
-    const Color(0xFFEFFFFA),
-  ];
-
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  int _bottomTabIndex = 0;
   bool loading = true;
-
   List<Map<String, dynamic>> allGoals = [];
-
-  String selectedTab = 'all';
 
   @override
   void initState() {
@@ -55,504 +43,101 @@ class _GoalsScreenState extends State<GoalsScreen> {
 
   Future<void> loadGoals() async {
     try {
-      setState(() {
-        loading = true;
-      });
-
+      setState(() => loading = true);
       final employeeId = widget.userData['id'];
       final organizationId = widget.userData['organization_id'];
-
-      final response = await supabase
-          .from('employee_goals')
-          .select()
-          .eq('emp_id', employeeId)
-          .eq('organization_id', organizationId)
-          .order('created_at', ascending: false);
-
+      final response = await supabase.from('employee_goals').select().eq('emp_id', employeeId).eq('organization_id', organizationId).order('created_at', ascending: false);
       allGoals = List<Map<String, dynamic>>.from(response);
     } catch (e) {
       debugPrint("Goals fetch error: $e");
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Failed to load goals: $e"),
-          ),
-        );
-      }
     } finally {
-      if (mounted) {
-        setState(() {
-          loading = false;
-        });
-      }
+      if (mounted) setState(() => loading = false);
     }
   }
 
-  List<Map<String, dynamic>> get filteredGoals {
-    if (selectedTab == 'all') {
-      return allGoals;
-    }
-
-    return allGoals.where((goal) {
-      final status =
-      (goal['status'] ?? '').toString().toLowerCase();
-
-      return status == selectedTab;
-    }).toList();
-  }
-
-  Color getStatusColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'approved':
-        return const Color(0xFF219653);
-
-      case 'submitted':
-        return const Color(0xFF2F80ED);
-
-      case 'needs revision':
-        return const Color(0xFFF2994A);
-
-      case 'draft':
-      default:
-        return Colors.grey.shade600;
-    }
+  Widget _circleIconBtn({required String icon, required VoidCallback onTap}) {
+    return Container(
+      decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))]),
+      child: IconButton(icon: SvgPicture.asset(icon, width: 20, height: 20, colorFilter: const ColorFilter.mode(EmployeeUi.primary, BlendMode.srcIn)), onPressed: onTap),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
-
+      backgroundColor: EmployeeUi.pageBg,
       endDrawer: AppDrawer(
         userEmail: widget.userEmail,
         userData: widget.userData,
-
         fetchHrmsContext: widget.fetchHrmsContext!,
         currentRoute: DrawerRoute.performance,
         companyLogoUrl: null,
       ),
-      backgroundColor: const Color(0xFFF7F9FC),
-
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        foregroundColor: Colors.black,
-        title: Text(
-          "Goals",
-          style: GoogleFonts.montserrat(
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        actions: [
-          IconButton(
-            icon: SvgPicture.asset(
-              "assets/icons/menu.svg",
-              width: 22,
-              height: 22,
-            ),
-            onPressed: () {
-              _scaffoldKey.currentState?.openEndDrawer();
-            },
-          ),
-        ],
-      ),
-
-      body: loading
-          ? const SkeletonGoals()
-          : RefreshIndicator(
-        onRefresh: loadGoals,
-        child: Column(
-          children: [
-            const SizedBox(height: 14),
-
-
-            // ================= FILTER TABS =================
-            // ================= GOALS LIST =================
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 18,
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 140,
+            floating: false,
+            pinned: true,
+            automaticallyImplyLeading: false,
+            backgroundColor: Colors.white,
+            elevation: 0,
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8, top: 12),
+                child: _circleIconBtn(
+                  icon: "assets/icons/notification.svg",
+                  onTap: () {
+                    final empId = (widget.userData['id'] ?? widget.userData['employee_id'])?.toString() ?? '';
+                    if (empId.isNotEmpty) {
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => NotificationsScreen(employeeId: empId, userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext!)));
+                    }
+                  },
+                ),
               ),
-              child: Row(
-                children: [
-                  Text(
-                    "All Goals",
-                    style: GoogleFonts.montserrat(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFF2D3436),
-                    ),
-                  ),
-                ],
+              Padding(
+                padding: const EdgeInsets.only(right: 16, top: 12),
+                child: _circleIconBtn(icon: "assets/icons/menu.svg", onTap: () => _scaffoldKey.currentState?.openEndDrawer()),
               ),
-            ),
-            const SizedBox(height: 18),
-            Expanded(
-              child: filteredGoals.isEmpty
-                  ? Center(
-                child: Text(
-                  "No goals found",
-                  style: GoogleFonts.montserrat(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
+              const SizedBox(width: 1),
+            ],
+            flexibleSpace: FlexibleSpaceBar(
+              background: Container(
+                padding: const EdgeInsets.fromLTRB(24, 40, 24, 20),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFFD4F3F7), Colors.white],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
                 ),
-              )
-                  : ListView.builder(
-                padding: const EdgeInsets.all(14),
-                itemCount: filteredGoals.length,
-                itemBuilder: (context, index) {
-                  final goal =
-                  filteredGoals[index];
-
-                  final title =
-                      goal['title'] ?? '-';
-
-                  final description =
-                      goal['description'] ?? '-';
-
-                  final category =
-                      goal['category'] ?? '-';
-
-                  final status =
-                      goal['status'] ?? 'draft';
-
-                  final weightage =
-                      goal['weightage']
-                          ?.toString() ??
-                          '0';
-
-                  final progress =
-                      goal['progress_percentage'] ??
-                          0;
-                  final milestones =
-                      (goal['milestones']
-                      as List?) ??
-                          [];
-                  return Container(
-                    margin:
-                    const EdgeInsets.only(
-                        bottom: 18),
-                    decoration: BoxDecoration(
-                      color: pastelColors[
-                      index % pastelColors.length
-                      ],
-                      borderRadius:
-                      BorderRadius.circular(
-                          24),
-
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black
-                              .withOpacity(0.04),
-                          blurRadius: 10,
-                          offset:
-                          const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-
-                    child: Column(
-                      crossAxisAlignment:
-                      CrossAxisAlignment
-                          .start,
-                      children: [
-                        Padding(
-                          padding:
-                          const EdgeInsets
-                              .all(18),
-
-                          child: Column(
-                            crossAxisAlignment:
-                            CrossAxisAlignment
-                                .start,
-
-                            children: [
-                              // TITLE
-
-                              Text(
-                                title,
-                                style:
-                                GoogleFonts
-                                    .montserrat(
-                                  fontSize: 24,
-                                  fontWeight:
-                                  FontWeight
-                                      .w700,
-                                  color: const Color(
-                                      0xFF2D3436),
-                                ),
-                              ),
-
-                              const SizedBox(
-                                  height: 14),
-
-                              // CHIPS
-
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  buildChip(
-                                    status
-                                        .toString(),
-                                    getStatusColor(
-                                      status
-                                          .toString(),
-                                    ),
-                                  ),
-
-                                  buildChip(
-                                    category
-                                        .toString(),
-                                    Colors
-                                        .black54,
-                                  ),
-
-                                  buildChip(
-                                    "Weightage: $weightage%",
-                                    Colors
-                                        .black45,
-                                  ),
-                                ],
-                              ),
-
-                              const SizedBox(
-                                  height: 18),
-
-                              // DESCRIPTION
-
-                              Text(
-                                description,
-                                style:
-                                GoogleFonts
-                                    .montserrat(
-                                  fontSize: 14,
-                                  height: 1.6,
-                                  color: Colors
-                                      .grey
-                                      .shade700,
-                                ),
-                              ),
-
-                              const SizedBox(
-                                  height: 20),
-
-                              // PROGRESS
-
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child:
-                                    LinearProgressIndicator(
-                                      value:
-                                      progress /
-                                          100,
-
-                                      minHeight:
-                                      8,
-
-                                      borderRadius:
-                                      BorderRadius.circular(
-                                          20),
-
-                                      backgroundColor:
-                                      Colors
-                                          .grey
-                                          .shade200,
-
-                                      valueColor:
-                                      AlwaysStoppedAnimation(
-                                        getStatusColor(
-                                          status
-                                              .toString(),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-
-                                  const SizedBox(
-                                      width:
-                                      12),
-
-                                  Text(
-                                    "$progress%",
-                                    style:
-                                    GoogleFonts
-                                        .montserrat(
-                                      fontWeight:
-                                      FontWeight
-                                          .w700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-
-                              const SizedBox(
-                                  height: 24),
-
-                              // MILESTONES
-
-                              Text(
-                                "Milestones:",
-                                style:
-                                GoogleFonts
-                                    .montserrat(
-                                  fontSize: 16,
-                                  fontWeight:
-                                  FontWeight
-                                      .w700,
-                                ),
-                              ),
-
-                              const SizedBox(
-                                  height: 10),
-
-                              if (milestones
-                                  .isEmpty)
-                                Text(
-                                  "No milestones added",
-                                  style:
-                                  GoogleFonts
-                                      .montserrat(
-                                    color: Colors
-                                        .grey
-                                        .shade600,
-                                  ),
-                                ),
-
-                              ...milestones.map(
-                                    (milestone) =>
-                                    Padding(
-                                      padding:
-                                      const EdgeInsets
-                                          .only(
-                                        bottom: 8,
-                                      ),
-
-                                      child: Row(
-                                        crossAxisAlignment:
-                                        CrossAxisAlignment
-                                            .start,
-
-                                        children: [
-                                          const Padding(
-                                            padding:
-                                            EdgeInsets.only(
-                                              top:
-                                              7,
-                                            ),
-                                            child:
-                                            Icon(
-                                              Icons
-                                                  .circle,
-                                              size:
-                                              6,
-                                            ),
-                                          ),
-
-                                          const SizedBox(
-                                              width:
-                                              10),
-
-                                          Expanded(
-                                            child:
-                                            Text(
-                                              milestone
-                                                  .toString(),
-
-                                              style:
-                                              GoogleFonts.montserrat(
-                                                fontSize:
-                                                14,
-
-                                                height:
-                                                1.5,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        // FOOTER
-
-                        Container(
-                          width: double.infinity,
-
-                          padding:
-                          const EdgeInsets
-                              .symmetric(
-                            horizontal: 18,
-                            vertical: 16,
-                          ),
-
-                          decoration:
-                          BoxDecoration(
-                            color: Colors
-                                .grey.shade50,
-
-                            borderRadius:
-                            const BorderRadius
-                                .only(
-                              bottomLeft:
-                              Radius.circular(
-                                  24),
-
-                              bottomRight:
-                              Radius.circular(
-                                  24),
-                            ),
-                          ),
-
-                          child: Row(
-                            mainAxisAlignment:
-                            MainAxisAlignment
-                                .spaceBetween,
-
-                            children: [
-                              Text(
-                                "Created: ${formatDate(goal['created_at'])}",
-
-                                style:
-                                GoogleFonts
-                                    .montserrat(
-                                  fontSize: 12,
-
-                                  color: Colors
-                                      .grey
-                                      .shade600,
-                                ),
-                              ),
-
-                              Text(
-                                "Updated: ${formatDate(goal['updated_at'])}",
-
-                                style:
-                                GoogleFonts
-                                    .montserrat(
-                                  fontSize: 12,
-
-                                  color: Colors
-                                      .grey
-                                      .shade600,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Text("My Goals", style: EmployeeUi.header(24)),
+                    const SizedBox(height: 4),
+                    Text("Track your performance and targets", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
+                  ],
+                ),
               ),
             ),
-          ],
-        ),
+          ),
+          SliverToBoxAdapter(
+            child: loading
+                ? const SkeletonGoals()
+                : Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: allGoals.isEmpty
+                        ? Container(height: 300, alignment: Alignment.center, child: Text("No goals found", style: GoogleFonts.montserrat(color: Colors.grey)))
+                        : Column(
+                            children: allGoals.map((g) => _buildGoalCard(g)).toList(),
+                          ),
+                  ),
+          ),
+          const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
+        ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,
@@ -563,210 +148,51 @@ class _GoalsScreenState extends State<GoalsScreen> {
         unselectedItemColor: Colors.grey,
         showSelectedLabels: true,
         showUnselectedLabels: true,
-
         onTap: (index) {
-          if (index == 0) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (_) => DashboardScreen(
-                  email: widget.userEmail,
-                  employeeId: widget.userData['id'],
-                ),
-              ),
-            );
-          }
-
-          if (index == 1) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => LeavesScreen(
-                  email: widget.userEmail,
-                  userData: widget.userData,
-                  fetchHrmsContext:
-                  widget.fetchHrmsContext!,
-                ),
-              ),
-            );
-          }
-
-          if (index == 2) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => TimeAttendanceScreen(
-                  userEmail: widget.userEmail,
-                  userData: widget.userData,
-                  fetchHrmsContext:
-                  widget.fetchHrmsContext!
-                ),
-              ),
-            );
-          }
-
-          if (index == 3) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => PayslipScreen(
-                  userEmail: widget.userEmail,
-                  userData: widget.userData,
-                  fetchHrmsContext:
-                  widget.fetchHrmsContext!
-                ),
-              ),
-            );
-          }
-
-          if (index == 4) {
-            _scaffoldKey.currentState
-                ?.openEndDrawer();
-          }
+          if (index == 0) { Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(email: widget.userEmail, employeeId: widget.userData['id']))); return; }
+          if (index == 1) { Navigator.push(context, MaterialPageRoute(builder: (_) => LeavesScreen(email: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext!))); return; }
+          if (index == 2) { Navigator.push(context, MaterialPageRoute(builder: (_) => TimeAttendanceScreen(userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext!))); return; }
+          if (index == 3) { Navigator.push(context, MaterialPageRoute(builder: (_) => PayslipScreen(userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext!))); return; }
+          if (index == 4) { _scaffoldKey.currentState?.openEndDrawer(); return; }
         },
-
         items: [
-          BottomNavigationBarItem(
-            icon: SvgPicture.asset(
-              "assets/icons/dashboard.svg",
-              width: 22,
-            ),
-            label: 'Dashboard',
-          ),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/dashboard.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Dashboard'),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/leaves.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Leave'),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/attendance.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Attendance'),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/payroll.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Payslip'),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/menu.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'More'),
+        ],
+      ),
+    );
+  }
 
-          BottomNavigationBarItem(
-            icon: SvgPicture.asset(
-              "assets/icons/leaves.svg",
-              width: 22,
-            ),
-            label: 'Leave',
+  Widget _buildGoalCard(Map<String, dynamic> g) {
+    final progress = (g['progress_percentage'] ?? 0).toDouble();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: EmployeeUi.cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(g['title'] ?? '-', style: EmployeeUi.title(16)),
+          const SizedBox(height: 8),
+          Text(g['description'] ?? '-', style: GoogleFonts.montserrat(fontSize: 13, color: Colors.black54, height: 1.4)),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("Progress", style: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.bold)),
+              Text("${progress.toInt()}%", style: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.bold, color: EmployeeUi.primary)),
+            ],
           ),
-
-          BottomNavigationBarItem(
-            icon: SvgPicture.asset(
-              "assets/icons/attendance.svg",
-              width: 22,
-            ),
-            label: 'Attendance',
-          ),
-
-          BottomNavigationBarItem(
-            icon: SvgPicture.asset(
-              "assets/icons/payroll.svg",
-              width: 22,
-            ),
-            label: 'Payslip',
-          ),
-
-          BottomNavigationBarItem(
-            icon: SvgPicture.asset(
-              "assets/icons/menu.svg",
-              width: 22,
-            ),
-            label: 'More',
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: LinearProgressIndicator(value: progress / 100, minHeight: 6, backgroundColor: Colors.grey.shade100, valueColor: const AlwaysStoppedAnimation(EmployeeUi.primary)),
           ),
         ],
       ),
     );
-
-  }
-
-  // ================= TAB =================
-
-  Widget buildTab(String value, String label) {
-    final selected = selectedTab == value;
-
-    return Padding(
-      padding: const EdgeInsets.only(right: 10),
-
-      child: GestureDetector(
-        onTap: () {
-          setState(() {
-            selectedTab = value;
-          });
-        },
-
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 18,
-            vertical: 10,
-          ),
-
-          decoration: BoxDecoration(
-            color: selected
-                ? Colors.white
-                : Colors.transparent,
-
-            borderRadius:
-            BorderRadius.circular(12),
-
-            border: Border.all(
-              color: selected
-                  ? Colors.grey.shade300
-                  : Colors.transparent,
-            ),
-          ),
-
-          child: Text(
-            label,
-
-            style: GoogleFonts.montserrat(
-              fontWeight: selected
-                  ? FontWeight.w700
-                  : FontWeight.w500,
-
-              color: Colors.black87,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ================= CHIP =================
-
-  Widget buildChip(String text, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 14,
-        vertical: 8,
-      ),
-
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
-
-        borderRadius:
-        BorderRadius.circular(30),
-
-        border: Border.all(
-          color: color.withOpacity(0.25),
-        ),
-      ),
-
-      child: Text(
-        text,
-
-        style: GoogleFonts.montserrat(
-          fontSize: 13,
-          fontWeight: FontWeight.w600,
-          color: color,
-        ),
-      ),
-    );
-  }
-
-  // ================= DATE FORMAT =================
-
-  String formatDate(dynamic value) {
-    if (value == null) return '-';
-
-    try {
-      final date =
-      DateTime.parse(value.toString()).toLocal();
-
-      return "${date.day}/${date.month}/${date.year}";
-    } catch (_) {
-      return '-';
-    }
   }
 }

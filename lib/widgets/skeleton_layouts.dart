@@ -207,19 +207,16 @@ class SkeletonAnnouncements extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    return ListView(
       padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: const [
-          SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
-          SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
-          SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
-          SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
-          SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
-          SizedBox(height: 300), // fill space to avoid blank
-        ],
-      ),
+      children: const [
+        SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
+        SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
+        SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
+        SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
+        SkeletonBox(width: double.infinity, height: 120, margin: EdgeInsets.only(bottom: 16)),
+        SizedBox(height: 300), // fill space to avoid blank
+      ],
     );
   }
 }

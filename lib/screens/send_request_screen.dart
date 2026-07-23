@@ -1,9 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import '../widgets/app_drawer.dart';
+import '../widgets/drawer_route.dart';
+import 'dashboard_screen.dart';
+import 'leaves_screen.dart';
+import 'attendance_screen.dart';
+import 'payslip_screen.dart';
+import 'notification.dart';
+import '../widgets/employee_ui.dart';
 
 class SendRequestScreen extends StatefulWidget {
-  final String employeeEmail;
-  const SendRequestScreen({super.key, required this.employeeEmail});
+  final String userEmail;
+  final Map<String, dynamic> userData;
+  final Future<Map<String, dynamic>> Function() fetchHrmsContext;
+
+  const SendRequestScreen({
+    Key? key,
+    required this.userEmail,
+    required this.userData,
+    required this.fetchHrmsContext,
+  }) : super(key: key);
 
   @override
   State<SendRequestScreen> createState() => _SendRequestScreenState();
@@ -11,22 +29,13 @@ class SendRequestScreen extends StatefulWidget {
 
 class _SendRequestScreenState extends State<SendRequestScreen> with SingleTickerProviderStateMixin {
   final supabase = Supabase.instance.client;
-
-  String? managerId;
-  String? managerName;
-  String? employeeId;
-  String? orgId;
-
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  int _bottomTabIndex = 0;
+  String? managerId, managerName, employeeId, orgId;
   String recipientType = "manager";
-  final TextEditingController subjectController = TextEditingController();
-  final TextEditingController messageController = TextEditingController();
-
-  bool loadingProfile = true;
-  bool sending = false;
-  String sendError = "";
-  String fetchError = "";
-  bool loadingRequests = false;
-
+  final subjectController = TextEditingController();
+  final messageController = TextEditingController();
+  bool loadingProfile = true, sending = false, loadingRequests = false;
   late TabController _tabController;
   List<Map<String, dynamic>> requests = [];
 
@@ -34,22 +43,14 @@ class _SendRequestScreenState extends State<SendRequestScreen> with SingleTicker
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() => setState(() {}));
     loadProfileAndRequests();
   }
 
   Future<void> loadProfileAndRequests() async {
-    setState(() {
-      loadingProfile = true;
-      fetchError = "";
-    });
-
+    setState(() => loadingProfile = true);
     try {
-      final emp = await supabase
-          .from('employee_records')
-          .select()
-          .eq('email', widget.employeeEmail)
-          .maybeSingle();
-
+      final emp = await supabase.from('employee_records').select().eq('email', widget.userEmail).maybeSingle();
       setState(() {
         employeeId = emp?['id']?.toString();
         managerId = emp?['manager_id']?.toString();
@@ -57,371 +58,205 @@ class _SendRequestScreenState extends State<SendRequestScreen> with SingleTicker
         orgId = emp?['organization_id']?.toString();
         loadingProfile = false;
       });
-
-      if (employeeId != null && employeeId!.isNotEmpty) {
-        await fetchRequests();
-      } else {
-        setState(() {
-          fetchError = "Employee ID (UUID) not found. Cannot fetch requests.";
-        });
-      }
+      if (employeeId != null) await fetchRequests();
     } catch (e) {
-      setState(() {
-        loadingProfile = false;
-        fetchError = "Failed to fetch profile: $e";
-      });
+      setState(() => loadingProfile = false);
     }
   }
 
   Future<void> fetchRequests() async {
-    setState(() {
-      loadingRequests = true;
-      fetchError = "";
-    });
+    setState(() => loadingRequests = true);
     try {
-      if (employeeId == null || employeeId!.isEmpty) {
-        setState(() {
-          requests = [];
-          loadingRequests = false;
-        });
-        return;
-      }
-
-      final resp = await supabase
-          .from('support_requests')
-          .select()
-          .eq('employee_id', employeeId!)
-          .order('created_at', ascending: false);
-
-      setState(() {
-        requests = (resp as List).cast<Map<String, dynamic>>();
-        loadingRequests = false;
-      });
+      final resp = await supabase.from('support_requests').select().eq('employee_id', employeeId!).order('created_at', ascending: false);
+      setState(() { requests = (resp as List).cast<Map<String, dynamic>>(); loadingRequests = false; });
     } catch (e) {
-      setState(() {
-        loadingRequests = false;
-        requests = [];
-        fetchError = "Could not fetch requests: $e";
-      });
+      setState(() => loadingRequests = false);
     }
   }
 
-  Future<void> sendSupportRequest() async {
-    final subject = subjectController.text.trim();
-    final message = messageController.text.trim();
-
-    if (subject.isEmpty || message.isEmpty) {
-      setState(() {
-        sendError = "Subject and message cannot be empty.";
-      });
-      return;
-    }
-    if ((recipientType == 'manager' && (managerId == null || managerId!.isEmpty)) ||
-        employeeId == null || employeeId!.isEmpty ||
-        orgId == null || orgId!.isEmpty) {
-      setState(() {
-        sendError = "Invalid manager/org/employee details.";
-      });
-      return;
-    }
-
-    setState(() {
-      sending = true;
-      sendError = "";
-    });
-
-    final recId = recipientType == 'manager' ? managerId! : "hr";
-    final recType = recipientType;
-
-    final payload = {
-      "subject": subject,
-      "message": message,
-      "employee_id": employeeId,
-      "organization_id": orgId,
-      "manager_id": recType == "manager" ? recId : null,
-      "recipient_type": recType,
-      "status": "pending",
-    };
-
-    try {
-      await supabase.from('support_requests').insert(payload);
-
-      setState(() {
-        sending = false;
-      });
-
-      subjectController.clear();
-      messageController.clear();
-
-      await fetchRequests();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Request sent successfully.")),
-      );
-    } catch (e) {
-      setState(() {
-        sending = false;
-        sendError = "Failed to send request: $e";
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    subjectController.dispose();
-    messageController.dispose();
-    _tabController.dispose();
-    super.dispose();
+  Widget _circleIconBtn({required String icon, required VoidCallback onTap}) {
+    return Container(
+      decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))]),
+      child: IconButton(icon: SvgPicture.asset(icon, width: 20, height: 20, colorFilter: const ColorFilter.mode(EmployeeUi.primary, BlendMode.srcIn)), onPressed: onTap),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final managerDropdownValue = (managerName != null && managerName!.isNotEmpty)
-        ? "Manager ($managerName)"
-        : "Manager";
-
     return Scaffold(
-      appBar: AppBar(title: Text("Send Request", style: theme.textTheme.headlineMedium)),
-      body: loadingProfile
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-        children: [
-          TabBar(
-            controller: _tabController,
-            tabs: const [
-              Tab(text: "Send Request"),
-              Tab(text: "See Response"),
+      key: _scaffoldKey,
+      backgroundColor: EmployeeUi.pageBg,
+      endDrawer: AppDrawer(
+        userEmail: widget.userEmail,
+        userData: widget.userData,
+        fetchHrmsContext: widget.fetchHrmsContext,
+        currentRoute: DrawerRoute.dashboard, // Using dashboard as fallback
+        companyLogoUrl: null,
+      ),
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 140,
+            floating: false,
+            pinned: true,
+            automaticallyImplyLeading: false,
+            backgroundColor: Colors.white,
+            elevation: 0,
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8, top: 12),
+                child: _circleIconBtn(
+                  icon: "assets/icons/notification.svg",
+                  onTap: () {
+                    final empId = (widget.userData['id'] ?? widget.userData['employee_id'])?.toString() ?? '';
+                    if (empId.isNotEmpty) {
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => NotificationsScreen(employeeId: empId, userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext)));
+                    }
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(right: 16, top: 12),
+                child: _circleIconBtn(icon: "assets/icons/menu.svg", onTap: () => _scaffoldKey.currentState?.openEndDrawer()),
+              ),
+              const SizedBox(width: 1),
             ],
-            labelColor: theme.colorScheme.primary,
-            unselectedLabelColor: theme.textTheme.bodySmall!.color,
-            indicatorColor: theme.colorScheme.primary,
-            labelStyle: theme.textTheme.bodyLarge!.copyWith(fontWeight: FontWeight.bold),
-          ),
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: AbsorbPointer(
-                    absorbing: loadingProfile || employeeId == null || orgId == null,
-                    child: Opacity(
-                      opacity: (loadingProfile || employeeId == null || orgId == null) ? 0.45 : 1,
-                      child: Column(
-                        children: [
-                          Card(
-                            margin: const EdgeInsets.only(bottom: 20),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text("Send Request", style: theme.textTheme.headlineMedium!.copyWith(fontWeight: FontWeight.bold)),
-                                  const SizedBox(height: 5),
-                                  Text("Submit your queries or requests to your manager or HR team",
-                                      style: theme.textTheme.bodyLarge),
-                                  const Divider(),
-                                  DropdownButtonFormField<String>(
-                                    value: recipientType,
-                                    items: [
-                                      DropdownMenuItem(value: "manager", child: Text(managerDropdownValue, style: theme.textTheme.bodyLarge)),
-                                      DropdownMenuItem(value: "hr", child: Text("HR Team", style: theme.textTheme.bodyLarge)),
-                                    ],
-                                    onChanged: (v) => setState(() { recipientType = v!; }),
-                                    decoration: InputDecoration(
-                                      labelText: "Send To",
-                                      prefixIcon: Icon(Icons.person_outline, color: theme.colorScheme.primary),
-                                      filled: true,
-                                      fillColor: theme.cardColor,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 13),
-                                  TextFormField(
-                                    controller: subjectController,
-                                    decoration: InputDecoration(
-                                      labelText: "Subject",
-                                      hintText: "Brief description of your request",
-                                      filled: true,
-                                      fillColor: theme.cardColor,
-                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                                    ),
-                                    style: theme.textTheme.bodyLarge,
-                                  ),
-                                  const SizedBox(height: 13),
-                                  TextFormField(
-                                    controller: messageController,
-                                    decoration: InputDecoration(
-                                      labelText: "Message",
-                                      hintText: "Describe your request or query in detail...",
-                                      filled: true,
-                                      fillColor: theme.cardColor,
-                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                                    ),
-                                    minLines: 3,
-                                    maxLines: 5,
-                                    style: theme.textTheme.bodyLarge,
-                                  ),
-                                  const SizedBox(height: 15),
-                                  if (sendError.isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(bottom: 8.0),
-                                      child: Text(sendError, style: theme.textTheme.bodyLarge!.copyWith(color: theme.colorScheme.error)),
-                                    ),
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: ElevatedButton(
-                                          onPressed: sending ? null : sendSupportRequest,
-                                          child: sending
-                                              ? SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: theme.colorScheme.onPrimary,
-                                            ),
-                                          )
-                                              : const Text("Send Request"),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      Icon(Icons.send, color: theme.colorScheme.primary),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+            flexibleSpace: FlexibleSpaceBar(
+              background: Container(
+                padding: const EdgeInsets.fromLTRB(24, 40, 24, 20),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFFFFECE6), Colors.white],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
                 ),
-                loadingRequests
-                    ? const Center(child: CircularProgressIndicator())
-                    : fetchError.isNotEmpty
-                    ? Center(child: Text(fetchError, style: theme.textTheme.bodyLarge!.copyWith(color: theme.colorScheme.error)))
-                    : RefreshIndicator(
-                  onRefresh: fetchRequests,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(18),
-                    itemCount: requests.length,
-                    itemBuilder: (ctx, idx) {
-                      final req = requests[idx];
-                      final isPending = req['status'] == 'pending';
-                      final isResolved = req['status'] == 'resolved' ||
-                          req['status'] == 'responded' ||
-                          (req['response'] ?? '').toString().isNotEmpty;
-
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 15),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(Icons.description_outlined, color: theme.colorScheme.primary),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(req['subject'] ?? "",
-                                        style: theme.textTheme.bodyLarge!.copyWith(fontWeight: FontWeight.bold)),
-                                  ),
-                                  if (isResolved)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                                      decoration: BoxDecoration(
-                                        color: Colors.green.shade50,
-                                        borderRadius: BorderRadius.circular(16),
-                                      ),
-                                      child: Text("Resolved",
-                                          style: theme.textTheme.bodySmall!.copyWith(color: Colors.green.shade800)),
-                                    )
-                                  else if (isPending)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                                      decoration: BoxDecoration(
-                                        color: Colors.blue.shade50,
-                                        borderRadius: BorderRadius.circular(16),
-                                      ),
-                                      child: Text("Pending", style: theme.textTheme.bodySmall!.copyWith(color: Colors.blue.shade800)),
-                                    )
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  Icon(Icons.account_circle_outlined,
-                                      size: 18, color: theme.colorScheme.secondary),
-                                  const SizedBox(width: 6),
-                                  Text("Sent to: ",
-                                      style: theme.textTheme.bodyMedium),
-                                  Text(
-                                    req['recipient_type'] == "hr"
-                                        ? "HR Team"
-                                        : "Manager",
-                                    style: theme.textTheme.bodyMedium!.copyWith(fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Icon(Icons.schedule,
-                                      size: 18, color: theme.colorScheme.secondary),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    timeAgo(DateTime.parse(req['created_at'])),
-                                    style: theme.textTheme.bodySmall!.copyWith(color: theme.colorScheme.secondary),
-                                  )
-                                ],
-                              ),
-                              if ((req['message'] ?? '').toString().isNotEmpty) ...[
-                                const SizedBox(height: 12),
-                                Text("Your Message:", style: theme.textTheme.bodyMedium!.copyWith(fontWeight: FontWeight.bold)),
-                                Text(req['message'] ?? "", style: theme.textTheme.bodyMedium),
-                              ],
-                              if ((req['response'] ?? "").toString().isNotEmpty) ...[
-                                const SizedBox(height: 14),
-                                Text("Response:", style: theme.textTheme.bodyMedium!.copyWith(fontWeight: FontWeight.bold)),
-                                Text(req['response'], style: theme.textTheme.bodyMedium),
-                                Text(
-                                  "Responded ${timeAgo(DateTime.parse(req['responded_at'] ?? req['updated_at'] ?? req['created_at']))}",
-                                  style: theme.textTheme.bodySmall!.copyWith(color: theme.colorScheme.secondary),
-                                )
-                              ] else if (isPending) ...[
-                                const SizedBox(height: 14),
-                                Text(
-                                  "Waiting for response from your ${req['recipient_type'] == "hr" ? "HR team" : "manager"}...",
-                                  style: theme.textTheme.bodySmall!.copyWith(color: theme.colorScheme.secondary),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      );
-                    },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Text("Support Request", style: EmployeeUi.header(24)),
+                    const SizedBox(height: 4),
+                    Text("Get help from your manager or HR", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Column(
+              children: [
+                Container(
+                  margin: const EdgeInsets.fromLTRB(20, 16, 20, 10),
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: EmployeeUi.border)),
+                  child: TabBar(
+                    controller: _tabController,
+                    indicator: BoxDecoration(color: EmployeeUi.primary, borderRadius: BorderRadius.circular(10)),
+                    indicatorSize: TabBarIndicatorSize.tab,
+                    labelColor: Colors.white,
+                    unselectedLabelColor: Colors.black87,
+                    labelStyle: GoogleFonts.montserrat(fontWeight: FontWeight.w600, fontSize: 13),
+                    unselectedLabelStyle: GoogleFonts.montserrat(fontWeight: FontWeight.w500, fontSize: 13),
+                    tabs: const [Tab(text: 'Send New'), Tab(text: 'My History')],
                   ),
                 ),
               ],
             ),
           ),
+          SliverFillRemaining(
+            child: loadingProfile ? const Center(child: CircularProgressIndicator()) : TabBarView(
+              controller: _tabController,
+              children: [_buildForm(), _buildHistory()],
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
+        selectedFontSize: 10,
+        unselectedFontSize: 9,
+        currentIndex: _bottomTabIndex,
+        selectedItemColor: Colors.blueAccent,
+        unselectedItemColor: Colors.grey,
+        showSelectedLabels: true,
+        showUnselectedLabels: true,
+        onTap: (index) {
+          if (index == 0) { Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(email: widget.userEmail, employeeId: employeeId ?? ''))); return; }
+          if (index == 1) { Navigator.push(context, MaterialPageRoute(builder: (_) => LeavesScreen(email: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
+          if (index == 2) { Navigator.push(context, MaterialPageRoute(builder: (_) => TimeAttendanceScreen(userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
+          if (index == 3) { Navigator.push(context, MaterialPageRoute(builder: (_) => PayslipScreen(userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
+          if (index == 4) { _scaffoldKey.currentState?.openEndDrawer(); return; }
+        },
+        items: [
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/dashboard.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Dashboard'),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/leaves.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Leave'),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/attendance.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Attendance'),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/payroll.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Payslip'),
+          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/menu.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'More'),
         ],
       ),
     );
   }
 
-  String timeAgo(DateTime dt) {
-    final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inDays > 60) return "${(diff.inDays / 30).floor()} months ago";
-    if (diff.inDays > 30) return "about 1 month ago";
-    if (diff.inDays > 1) return "${diff.inDays} days ago";
-    if (diff.inDays == 1) return "1 day ago";
-    if (diff.inHours > 1) return "${diff.inHours} hours ago";
-    if (diff.inHours == 1) return "1 hour ago";
-    if (diff.inMinutes > 1) return "${diff.inMinutes} mins ago";
-    if (diff.inMinutes == 1) return "1 min ago";
-    return "few seconds ago";
+  Widget _buildForm() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        decoration: EmployeeUi.cardDecoration(),
+        child: Column(
+          children: [
+            DropdownButtonFormField<String>(
+              value: recipientType, decoration: const InputDecoration(labelText: "Recipient", border: OutlineInputBorder()),
+              items: [DropdownMenuItem(value: "manager", child: Text("Manager (${managerName ?? 'N/A'})")), const DropdownMenuItem(value: "hr", child: Text("HR Team"))],
+              onChanged: (v) => setState(() => recipientType = v!),
+            ),
+            const SizedBox(height: 16),
+            TextField(controller: subjectController, decoration: const InputDecoration(labelText: "Subject", border: OutlineInputBorder())),
+            const SizedBox(height: 16),
+            TextField(controller: messageController, maxLines: 5, decoration: const InputDecoration(labelText: "Message", border: OutlineInputBorder())),
+            const SizedBox(height: 24),
+            ElevatedButton(onPressed: () {}, style: ElevatedButton.styleFrom(backgroundColor: EmployeeUi.primary, foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), child: const Text("Submit Request", style: TextStyle(fontWeight: FontWeight.bold))),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistory() {
+    if (loadingRequests) return const Center(child: CircularProgressIndicator());
+    if (requests.isEmpty) return Center(child: Text("No requests found", style: GoogleFonts.montserrat(color: Colors.grey)));
+    return ListView.builder(
+      padding: const EdgeInsets.all(20), itemCount: requests.length,
+      itemBuilder: (context, i) => _buildRequestCard(requests[i]),
+    );
+  }
+
+  Widget _buildRequestCard(Map<String, dynamic> r) {
+    final status = (r['status'] ?? '').toString().toLowerCase();
+    Color statusColor = Colors.orange;
+    if (status == 'resolved') statusColor = Colors.green;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(20),
+      decoration: EmployeeUi.cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Expanded(child: Text(r['subject'] ?? '', style: EmployeeUi.title(15))),
+            Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)), child: Text(status.toUpperCase(), style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.bold, color: statusColor))),
+          ]),
+          const SizedBox(height: 8),
+          Text(r['message'] ?? '', style: GoogleFonts.montserrat(fontSize: 13, color: Colors.black54)),
+          if (r['response'] != null) ...[
+            const Divider(height: 24),
+            Text("Response:", style: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.bold)),
+            Text(r['response'], style: GoogleFonts.montserrat(fontSize: 13, color: EmployeeUi.primary)),
+          ]
+        ],
+      ),
+    );
   }
 }

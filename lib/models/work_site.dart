@@ -15,11 +15,11 @@ class WorkSite {
 
   factory WorkSite.fromMap(Map<String, dynamic> map) {
     return WorkSite(
-      id: map['id'].toString(),
+      id: (map['id'] ?? '').toString(),
       name: map['name'] ?? '',
-      latitude: (map['latitude'] as num).toDouble(),
-      longitude: (map['longitude'] as num).toDouble(),
-      radiusMeters: (map['radius_meters'] ?? 100).toDouble(),
+      latitude: double.tryParse((map['latitude'] ?? 0.0).toString()) ?? 0.0,
+      longitude: double.tryParse((map['longitude'] ?? 0.0).toString()) ?? 0.0,
+      radiusMeters: double.tryParse((map['radius_meters'] ?? 100).toString()) ?? 100.0,
     );
   }
 }

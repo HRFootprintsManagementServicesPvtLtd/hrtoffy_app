@@ -22,11 +22,11 @@ import '../widgets/bottom_nav_toffy_button.dart';
 
 import '../widgets/app_drawer.dart';
 import '../widgets/drawer_route.dart';
+import '../widgets/employee_ui.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
 import 'dart:convert';
-
 
 class PayslipScreen extends StatefulWidget {
   final String userEmail;
@@ -59,7 +59,8 @@ class _PayslipScreenState extends State<PayslipScreen> {
   int selectedYear = DateTime.now().year;
   Map<String, dynamic>? employee;
   Map<String, dynamic>? organization;
-  Map<String, dynamic>? payslip; // stored or computed map for the selected period
+  Map<String, dynamic>?
+  payslip; // stored or computed map for the selected period
   List<Map<String, dynamic>> salaryConfig = [];
   List<Map<String, dynamic>> professionalTaxSlabs = [];
   Map<String, dynamic>? eligibilityRow;
@@ -76,6 +77,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
     super.initState();
     _initialize();
   }
+
   // -------------------------
   // Initialization
   // -------------------------
@@ -95,14 +97,11 @@ class _PayslipScreenState extends State<PayslipScreen> {
       await _processPeriodChange(selectedMonth, selectedYear);
 
       // load default PDF fonts (built-in Helvetica). These always exist.
-      final regularFontData =
-      await rootBundle.load('fonts/Roboto-Regular.ttf');
-      final boldFontData =
-      await rootBundle.load('fonts/Roboto-Bold.ttf');
+      final regularFontData = await rootBundle.load('fonts/Roboto-Regular.ttf');
+      final boldFontData = await rootBundle.load('fonts/Roboto-Bold.ttf');
 
       _pdfReg = pw.Font.ttf(regularFontData);
       _pdfBold = pw.Font.ttf(boldFontData);
-
 
       // preload logo bytes
       final logoUrl = await _resolveLogoPublicUrl();
@@ -128,7 +127,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
     final userData = await supabase
         .from('employee_records')
         .select()
-        .eq('user_id', user.id)   // ✅ CHANGE HERE
+        .eq('user_id', user.id) // ✅ CHANGE HERE
         .limit(1)
         .maybeSingle();
 
@@ -164,11 +163,11 @@ class _PayslipScreenState extends State<PayslipScreen> {
     final decryptedBody = Map<String, dynamic>.from(body ?? {});
 
     if (decryptedBody['success'] == true) {
-      final decryptedData =
-      Map<String, dynamic>.from(decryptedBody['data'] ?? {});
+      final decryptedData = Map<String, dynamic>.from(
+        decryptedBody['data'] ?? {},
+      );
       employee = {...employee!, ...decryptedData};
     }
-
 
     final rawAnnual =
         (employee?['salary'] ?? employee?['annual_salary'])?.toString() ?? '0';
@@ -191,7 +190,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
     payrollCycleId = cycle?['id'];
   }
 
-
   Future<void> _loadOrganization() async {
     if (employee == null) return;
     final orgData = await supabase
@@ -204,6 +202,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
       organization = Map<String, dynamic>.from(orgData as Map);
     }
   }
+
   Future<void> _fetchGlobals() async {
     if (organization == null) return;
     final cfg = await supabase
@@ -211,18 +210,24 @@ class _PayslipScreenState extends State<PayslipScreen> {
         .select()
         .eq('organization_id', organization!['id'])
         .eq('enabled', true);
-    salaryConfig =
-    cfg != null ? List<Map<String, dynamic>>.from(cfg as List) : [];
+    salaryConfig = cfg != null
+        ? List<Map<String, dynamic>>.from(cfg as List)
+        : [];
 
     final pTax = await supabase
         .from('professional_tax_slabs')
         .select()
         .eq('organization_id', organization!['id']);
-    professionalTaxSlabs =
-    pTax != null ? List<Map<String, dynamic>>.from(pTax as List) : [];
-    professionalTaxSlabs.sort((a, b) =>
-        ((a['min_amount'] ?? 0) as num).compareTo((b['min_amount'] ?? 0) as num));
+    professionalTaxSlabs = pTax != null
+        ? List<Map<String, dynamic>>.from(pTax as List)
+        : [];
+    professionalTaxSlabs.sort(
+      (a, b) => ((a['min_amount'] ?? 0) as num).compareTo(
+        (b['min_amount'] ?? 0) as num,
+      ),
+    );
   }
+
   Future<void> _fetchLatestReleasedPeriod() async {
     if (employee == null) return;
 
@@ -254,6 +259,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
         .maybeSingle();
     if (res != null) taxSelection = Map<String, dynamic>.from(res as Map);
   }
+
   // -------------------------
   // Period change handling
   // -------------------------
@@ -312,9 +318,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
     /// decrypt payslip
     final session = supabase.auth.currentSession;
 
-
-
-// ✅ ADD THESE TWO LINES HERE
+    // ✅ ADD THESE TWO LINES HERE
     print("USER => ${supabase.auth.currentUser}");
     print("TOKEN => ${supabase.auth.currentSession?.accessToken}");
 
@@ -334,9 +338,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
         'record_id': stored['id'],
         'organization_id': employee!['organization_id'],
       },
-      headers: {
-        'Authorization': 'Bearer ${session!.accessToken}',
-      },
+      headers: {'Authorization': 'Bearer ${session!.accessToken}'},
     );
 
     final body = decryptedRes.data is String
@@ -349,15 +351,13 @@ class _PayslipScreenState extends State<PayslipScreen> {
       throw Exception("Payslip decryption failed");
     }
 
-    final payslipData =
-    Map<String, dynamic>.from(decryptedBody['data'] ?? {});
+    final payslipData = Map<String, dynamic>.from(decryptedBody['data'] ?? {});
     final attendance = await _computeAttendance(month, year);
 
     /// decrypt line items
     final lineItems = stored['payslip_line_items'] ?? [];
 
     if (lineItems.isNotEmpty) {
-
       final ids = lineItems.map((e) => e['id']).toList();
 
       final session = supabase.auth.currentSession;
@@ -374,9 +374,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
           'record_ids': ids,
           'organization_id': employee!['organization_id'],
         },
-        headers: {
-          'Authorization': 'Bearer ${session.accessToken}',
-        },
+        headers: {'Authorization': 'Bearer ${session.accessToken}'},
       );
 
       final batchBodyRaw = batch.data is String
@@ -386,15 +384,13 @@ class _PayslipScreenState extends State<PayslipScreen> {
       final batchBody = Map<String, dynamic>.from(batchBodyRaw ?? {});
 
       if (batchBody['success'] == true) {
-
-        final body = batch.data is String
-            ? jsonDecode(batch.data)
-            : batch.data;
+        final body = batch.data is String ? jsonDecode(batch.data) : batch.data;
 
         final batchBody = Map<String, dynamic>.from(body ?? {});
 
-        final decryptedItemsMap =
-        Map<String, dynamic>.from(batchBody['data'] ?? {});
+        final decryptedItemsMap = Map<String, dynamic>.from(
+          batchBody['data'] ?? {},
+        );
 
         final decryptedItems = ids
             .map((id) => decryptedItemsMap[id.toString()])
@@ -402,23 +398,20 @@ class _PayslipScreenState extends State<PayslipScreen> {
             .toList();
 
         payslipData['payslip_line_items'] = decryptedItems;
-        print("LINE ITEMS => ${payslipData['payslip_line_items']}"); // ✅ ADD HERE
+        print(
+          "LINE ITEMS => ${payslipData['payslip_line_items']}",
+        ); // ✅ ADD HERE
       }
     }
 
-    final enrichedPayslip = {
-      ...payslipData,
-      ...attendance,
-    };
-
+    final enrichedPayslip = {...payslipData, ...attendance};
 
     setState(() {
       payslip = enrichedPayslip;
       isLoading = false;
     });
-
-
   }
+
   Future<bool> _checkEmployeePayslipAccess(int month, int year) async {
     if (employee == null) return false;
 
@@ -433,8 +426,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
         .maybeSingle();
 
     if (cycle != null &&
-        (cycle['status'] == 'released' ||
-            cycle['status'] == 'finalized')) {
+        (cycle['status'] == 'released' || cycle['status'] == 'finalized')) {
       return true;
     }
 
@@ -475,7 +467,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
     return Map<String, dynamic>.from(res);
   }
 
-
   // -------------------------
   // Robust upsert for payslips with RLS awareness
   // -------------------------
@@ -485,9 +476,9 @@ class _PayslipScreenState extends State<PayslipScreen> {
     // Remove nested objects and empty lists
     payload.removeWhere((k, v) => v is Map || (v is List && v.isEmpty));
     try {
-      await supabase
-          .from('payslips')
-          .upsert([payload], onConflict: 'employee_id,organization_id,month,year');
+      await supabase.from('payslips').upsert([
+        payload,
+      ], onConflict: 'employee_id,organization_id,month,year');
       return;
     } catch (e) {
       final errStr = e.toString();
@@ -503,34 +494,38 @@ class _PayslipScreenState extends State<PayslipScreen> {
     final unsupportedKeys = <String>{};
     for (int attempt = 0; attempt < 8; attempt++) {
       try {
-        await supabase
-            .from('payslips')
-            .upsert([payload], onConflict: 'employee_id,organization_id,month,year');
+        await supabase.from('payslips').upsert([
+          payload,
+        ], onConflict: 'employee_id,organization_id,month,year');
         return;
       } catch (err) {
         final errStr = err.toString();
         debugPrint('Upsert retry error: $errStr');
-        final m =
-        RegExp(r"Could not find the '([^']+)' column").firstMatch(errStr);
+        final m = RegExp(
+          r"Could not find the '([^']+)' column",
+        ).firstMatch(errStr);
         if (m != null) {
           final col = m.group(1);
           if (col != null && payload.containsKey(col)) {
             unsupportedKeys.add(col);
             payload.remove(col);
             debugPrint(
-                'Removed unsupported payslip column: $col and retrying upsert');
+              'Removed unsupported payslip column: $col and retrying upsert',
+            );
             continue;
           }
         }
-        final m2 =
-        RegExp(r"the '([^']+)' column of 'payslips'").firstMatch(errStr);
+        final m2 = RegExp(
+          r"the '([^']+)' column of 'payslips'",
+        ).firstMatch(errStr);
         if (m2 != null) {
           final col = m2.group(1);
           if (col != null && payload.containsKey(col)) {
             unsupportedKeys.add(col);
             payload.remove(col);
             debugPrint(
-                'Removed unsupported payslip column: $col and retrying upsert');
+              'Removed unsupported payslip column: $col and retrying upsert',
+            );
             continue;
           }
         }
@@ -548,6 +543,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
       debugPrint('Final upsert attempted without keys: $unsupportedKeys');
     }
   }
+
   // -------------------------
   // Resolve logo URL and fetch bytes (cached)
   // -------------------------
@@ -563,6 +559,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
     }
     return raw;
   }
+
   Future<Uint8List?> _getLogoBytes(String? url) async {
     try {
       if (url == null || url.isEmpty) return null;
@@ -576,6 +573,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
     }
     return null;
   }
+
   // -------------------------
   // Helpers
   // -------------------------
@@ -583,6 +581,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
     if (month < 4) return '${year - 1}-$year';
     return '$year-${year + 1}';
   }
+
   double _computeProfessionalTax(double monthlySalary) {
     if (professionalTaxSlabs.isEmpty) return 0.0;
     for (final slab in professionalTaxSlabs) {
@@ -597,6 +596,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
     }
     return 0.0;
   }
+
   String _formatCurrencyDouble(double v) {
     try {
       final nf = NumberFormat.currency(
@@ -609,6 +609,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
       return v.toStringAsFixed(2);
     }
   }
+
   String _formatDate(String raw) {
     try {
       final dt = DateTime.parse(raw);
@@ -617,13 +618,11 @@ class _PayslipScreenState extends State<PayslipScreen> {
       return raw;
     }
   }
+
   // -------------------------
   // Attendance calculation
   // -------------------------
-  Future<Map<String, int>> _computeAttendance(
-      int month,
-      int year,
-      ) async {
+  Future<Map<String, int>> _computeAttendance(int month, int year) async {
     if (employee == null) return {};
 
     /// 1️⃣ Total Monthly Days
@@ -631,8 +630,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
 
     /// 2️⃣ Weekly Offs
     int weeklyOffs = 0;
-    final workingDaysPerWeek =
-        organization?['working_days_per_week'] ?? 5;
+    final workingDaysPerWeek = organization?['working_days_per_week'] ?? 5;
 
     final weeklyOffDays = workingDaysPerWeek == 6
         ? [DateTime.sunday]
@@ -652,9 +650,9 @@ class _PayslipScreenState extends State<PayslipScreen> {
         .eq('organization_id', employee!['organization_id'])
         .gte('date', '$year-${month.toString().padLeft(2, '0')}-01')
         .lte(
-      'date',
-      '$year-${month.toString().padLeft(2, '0')}-${totalDays.toString().padLeft(2, '0')}',
-    );
+          'date',
+          '$year-${month.toString().padLeft(2, '0')}-${totalDays.toString().padLeft(2, '0')}',
+        );
 
     final int holidayCount = holidays?.length ?? 0;
 
@@ -665,23 +663,22 @@ class _PayslipScreenState extends State<PayslipScreen> {
     final leaves = await supabase
         .from('leave_applications')
         .select(
-      'from_date,to_date,leave_type,status,leave_duration_type,half_day_session',
-    )
+          'from_date,to_date,leave_type,status,leave_duration_type,half_day_session',
+        )
         .eq('employee_id', employee!['id'])
         .inFilter('status', ['approved', 'manager_approved']);
 
     for (final leave in leaves ?? []) {
-      final leaveName =
-      (leave['leave_type'] ?? '').toString().toLowerCase();
+      final leaveName = (leave['leave_type'] ?? '').toString().toLowerCase();
 
-      final bool isLop = leaveName.contains('lop') ||
+      final bool isLop =
+          leaveName.contains('lop') ||
           leaveName.contains('loss of pay') ||
           leaveName.contains('unpaid');
 
       final from = DateTime.parse(leave['from_date']);
       final to = DateTime.parse(leave['to_date']);
-      final durationType =
-      (leave['leave_duration_type'] ?? 'full_day')
+      final durationType = (leave['leave_duration_type'] ?? 'full_day')
           .toString()
           .toLowerCase();
 
@@ -719,8 +716,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
     };
   }
 
-
-
   // -------------------------
   // Compute single payslip
   // -------------------------
@@ -730,14 +725,15 @@ class _PayslipScreenState extends State<PayslipScreen> {
     return (row['is_pf_eligible'] == true ||
         row['is_pf_eligible']?.toString() == 'true');
   }
+
   static bool eligibility_row_bool_esi(Map<String, dynamic>? row) {
     if (row == null) return false;
     return (row['is_esi_eligible'] == true ||
         row['is_esi_eligible']?.toString() == 'true');
   }
+
   // PDF generation helpers (single MultiPage for bulk & single)
-  pw.Widget _smallStatBoxPw(
-      String title, String value, pw.Font f, pw.Font bf) {
+  pw.Widget _smallStatBoxPw(String title, String value, pw.Font f, pw.Font bf) {
     return pw.Expanded(
       child: pw.Container(
         padding: const pw.EdgeInsets.symmetric(vertical: 10),
@@ -759,10 +755,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
             pw.SizedBox(height: 6),
             pw.Text(
               value,
-              style: pw.TextStyle(
-                font: bf,
-                fontSize: 13,
-              ),
+              style: pw.TextStyle(font: bf, fontSize: 13),
               textAlign: pw.TextAlign.center,
             ),
           ],
@@ -770,22 +763,24 @@ class _PayslipScreenState extends State<PayslipScreen> {
       ),
     );
   }
+
   Future<Uint8List> _generateMultiPayslipPdfBytes(
-      List<Map<String, dynamic>> pagesData,
-      {Uint8List? logoBytes}) async {
+    List<Map<String, dynamic>> pagesData, {
+    Uint8List? logoBytes,
+  }) async {
     final doc = pw.Document();
-    final nf =
-    NumberFormat.currency(locale: 'en_IN', symbol: '\u20B9', decimalDigits: 2);
+    final nf = NumberFormat.currency(
+      locale: 'en_IN',
+      symbol: '\u20B9',
+      decimalDigits: 2,
+    );
     final pf = _pdfReg ?? pw.Font.helvetica();
     final pb = _pdfBold ?? pw.Font.helveticaBold();
     doc.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
-        margin:
-        const pw.EdgeInsets.symmetric(horizontal: 28, vertical: 20),
-        theme: pw.ThemeData(
-          defaultTextStyle: pw.TextStyle(font: pf),
-        ),
+        margin: const pw.EdgeInsets.symmetric(horizontal: 28, vertical: 20),
+        theme: pw.ThemeData(defaultTextStyle: pw.TextStyle(font: pf)),
         build: (context) {
           final List<pw.Widget> widgets = <pw.Widget>[];
           for (final p in pagesData) {
@@ -793,40 +788,58 @@ class _PayslipScreenState extends State<PayslipScreen> {
             final Map<String, double> deductions = {};
 
             void addIfPresent(
-                Map<String, double> target, String label, dynamic value) {
+              Map<String, double> target,
+              String label,
+              dynamic value,
+            ) {
               final v = double.tryParse((value ?? '0').toString()) ?? 0.0;
               if (v != 0.0) target[label] = v;
             }
+
             addIfPresent(earnings, 'Basic Pay', p['basic_pay']);
             addIfPresent(earnings, 'HRA', p['hra']);
             addIfPresent(earnings, 'Special Allowance', p['special_allowance']);
             addIfPresent(
-                earnings, 'Dearness Allowance', p['dearness_allowance']);
+              earnings,
+              'Dearness Allowance',
+              p['dearness_allowance'],
+            );
             addIfPresent(
-                earnings, 'Conveyance Allowance', p['conveyance_allowance']);
-            addIfPresent(
-                earnings, 'Medical Allowance', p['medical_allowance']);
+              earnings,
+              'Conveyance Allowance',
+              p['conveyance_allowance'],
+            );
+            addIfPresent(earnings, 'Medical Allowance', p['medical_allowance']);
             addIfPresent(earnings, 'Other Allowances', p['other_allowances']);
             addIfPresent(earnings, 'Overtime Pay', p['overtime_pay']);
             addIfPresent(deductions, 'Employee PF', p['pf_employee']);
             addIfPresent(deductions, 'Employee ESI', p['employee_esi']);
             addIfPresent(deductions, 'Professional Tax', p['professional_tax']);
             addIfPresent(deductions, 'TDS/Income Tax', p['tds_income_tax']);
-            addIfPresent(deductions, 'Health & Education Cess',
-                p['health_education_cess']);
-            addIfPresent(deductions, 'Excess Leave Deduction',
-                p['excess_leave_deduction']);
+            addIfPresent(
+              deductions,
+              'Health & Education Cess',
+              p['health_education_cess'],
+            );
+            addIfPresent(
+              deductions,
+              'Excess Leave Deduction',
+              p['excess_leave_deduction'],
+            );
             addIfPresent(deductions, 'Loan Deduction', p['loan_deduction']);
             addIfPresent(deductions, 'Other Deductions', p['other_deductions']);
-            final gross = double.tryParse(
-                (p['gross_salary'] ?? p['total_earnings'] ?? '0')
-                    .toString()) ??
+            final gross =
+                double.tryParse(
+                  (p['gross_salary'] ?? p['total_earnings'] ?? '0').toString(),
+                ) ??
                 0.0;
             final totalDeductions =
                 double.tryParse((p['total_deductions'] ?? '0').toString()) ??
-                    0.0;
-            final net = double.tryParse(
-                (p['net_pay'] ?? (gross - totalDeductions)).toString()) ??
+                0.0;
+            final net =
+                double.tryParse(
+                  (p['net_pay'] ?? (gross - totalDeductions)).toString(),
+                ) ??
                 0.0;
             widgets.addAll([
               pw.Row(
@@ -851,10 +864,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
                         children: [
                           pw.Text(
                             organization?['name'] ?? '',
-                            style: pw.TextStyle(
-                              font: pb,
-                              fontSize: 16,
-                            ),
+                            style: pw.TextStyle(font: pb, fontSize: 16),
                           ),
 
                           pw.SizedBox(height: 4),
@@ -868,7 +878,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
                             ),
                           ),
                         ],
-                      )
+                      ),
                     ],
                   ),
 
@@ -877,17 +887,17 @@ class _PayslipScreenState extends State<PayslipScreen> {
                     children: [
                       pw.Text(
                         "Payslip",
-                        style: pw.TextStyle(
-                          font: pb,
-                          fontSize: 16,
-                        ),
+                        style: pw.TextStyle(font: pb, fontSize: 16),
                       ),
 
                       pw.SizedBox(height: 4),
 
                       pw.Text(
                         DateFormat('MMMM yyyy').format(
-                          DateTime(p['year'] ?? selectedYear, p['month'] ?? selectedMonth),
+                          DateTime(
+                            p['year'] ?? selectedYear,
+                            p['month'] ?? selectedMonth,
+                          ),
                         ),
                         style: pw.TextStyle(
                           font: pf,
@@ -914,29 +924,24 @@ class _PayslipScreenState extends State<PayslipScreen> {
                       children: [
                         pw.Expanded(
                           child: pw.Column(
-                            crossAxisAlignment:
-                            pw.CrossAxisAlignment.start,
+                            crossAxisAlignment: pw.CrossAxisAlignment.start,
                             children: [
                               pw.Text(
                                 'EMPLOYEE INFORMATION',
-                                style:
-                                pw.TextStyle(font: pb, fontSize: 10),
+                                style: pw.TextStyle(font: pb, fontSize: 10),
                               ),
                               pw.SizedBox(height: 8),
                               pw.Text(
                                 'Name: ${p['employee_name'] ?? ''}',
-                                style:
-                                pw.TextStyle(font: pf, fontSize: 10),
+                                style: pw.TextStyle(font: pf, fontSize: 10),
                               ),
                               pw.Text(
                                 'Dept: ${p['department'] ?? ''}',
-                                style:
-                                pw.TextStyle(font: pf, fontSize: 10),
+                                style: pw.TextStyle(font: pf, fontSize: 10),
                               ),
                               pw.Text(
                                 'PAN: ${p['pan_number'] ?? '--'}',
-                                style:
-                                pw.TextStyle(font: pf, fontSize: 10),
+                                style: pw.TextStyle(font: pf, fontSize: 10),
                               ),
                             ],
                           ),
@@ -944,23 +949,19 @@ class _PayslipScreenState extends State<PayslipScreen> {
                         pw.SizedBox(width: 8),
                         pw.Expanded(
                           child: pw.Column(
-                            crossAxisAlignment:
-                            pw.CrossAxisAlignment.start,
+                            crossAxisAlignment: pw.CrossAxisAlignment.start,
                             children: [
                               pw.Text(
                                 'Employee Code: ${p['employee_code'] ?? ''}',
-                                style:
-                                pw.TextStyle(font: pf, fontSize: 10),
+                                style: pw.TextStyle(font: pf, fontSize: 10),
                               ),
                               pw.Text(
                                 'Designation: ${p['designation'] ?? ''}',
-                                style:
-                                pw.TextStyle(font: pf, fontSize: 10),
+                                style: pw.TextStyle(font: pf, fontSize: 10),
                               ),
                               pw.Text(
                                 'UAN: ${p['pf_uan'] ?? '--'}',
-                                style:
-                                pw.TextStyle(font: pf, fontSize: 10),
+                                style: pw.TextStyle(font: pf, fontSize: 10),
                               ),
                             ],
                           ),
@@ -982,25 +983,25 @@ class _PayslipScreenState extends State<PayslipScreen> {
                     pw.Row(
                       children: [
                         _smallStatBoxPw(
-                            'TOTAL DAYS IN MONTH',
-                            (p['total_monthly_days'] ?? '--')
-                                .toString(),
-                            pf,
-                            pb),
+                          'TOTAL DAYS IN MONTH',
+                          (p['total_monthly_days'] ?? '--').toString(),
+                          pf,
+                          pb,
+                        ),
                         pw.SizedBox(width: 8),
                         _smallStatBoxPw(
-                            'TOTAL WORKING DAYS',
-                            (p['effective_work_days'] ?? '--')
-                                .toString(),
-                            pf,
-                            pb),
+                          'TOTAL WORKING DAYS',
+                          (p['effective_work_days'] ?? '--').toString(),
+                          pf,
+                          pb,
+                        ),
                         pw.SizedBox(width: 8),
                         _smallStatBoxPw(
-                            'WEEKLY OFFS, LEAVES & HOLIDAYS',
-                            (p['weekly_offs_leaves_holidays'] ?? '--')
-                                .toString(),
-                            pf,
-                            pb),
+                          'WEEKLY OFFS, LEAVES & HOLIDAYS',
+                          (p['weekly_offs_leaves_holidays'] ?? '--').toString(),
+                          pf,
+                          pb,
+                        ),
                         pw.SizedBox(width: 8),
                         _smallStatBoxPw(
                           'LOP/ABSENT',
@@ -1017,10 +1018,8 @@ class _PayslipScreenState extends State<PayslipScreen> {
                           child: pw.Container(
                             padding: const pw.EdgeInsets.all(8),
                             decoration: pw.BoxDecoration(
-                              border: pw.Border.all(
-                                  color: PdfColors.grey200),
-                              borderRadius:
-                              pw.BorderRadius.circular(6),
+                              border: pw.Border.all(color: PdfColors.grey200),
+                              borderRadius: pw.BorderRadius.circular(6),
                             ),
                             child: pw.Column(
                               children: [
@@ -1035,11 +1034,10 @@ class _PayslipScreenState extends State<PayslipScreen> {
                                 pw.SizedBox(height: 6),
                                 pw.Text(
                                   (p['pay_days'] ??
-                                      p['total_monthly_days'] ??
-                                      '--')
+                                          p['total_monthly_days'] ??
+                                          '--')
                                       .toString(),
-                                  style: pw.TextStyle(
-                                      font: pb, fontSize: 12),
+                                  style: pw.TextStyle(font: pb, fontSize: 12),
                                 ),
                               ],
                             ),
@@ -1062,8 +1060,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
                         borderRadius: pw.BorderRadius.circular(6),
                       ),
                       child: pw.Column(
-                        crossAxisAlignment:
-                        pw.CrossAxisAlignment.start,
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
                         children: [
                           pw.Container(
                             padding: const pw.EdgeInsets.symmetric(vertical: 4),
@@ -1095,9 +1092,10 @@ class _PayslipScreenState extends State<PayslipScreen> {
                                 pw.TableRow(
                                   children: [
                                     pw.Padding(
-                                      padding: const pw.EdgeInsets
-                                          .symmetric(
-                                          vertical: 6, horizontal: 4),
+                                      padding: const pw.EdgeInsets.symmetric(
+                                        vertical: 6,
+                                        horizontal: 4,
+                                      ),
                                       child: pw.Text(
                                         e.key,
                                         style: pw.TextStyle(
@@ -1107,17 +1105,17 @@ class _PayslipScreenState extends State<PayslipScreen> {
                                       ),
                                     ),
                                     pw.Padding(
-                                      padding: const pw.EdgeInsets
-                                          .symmetric(
-                                          vertical: 6, horizontal: 4),
+                                      padding: const pw.EdgeInsets.symmetric(
+                                        vertical: 6,
+                                        horizontal: 4,
+                                      ),
                                       child: pw.Text(
                                         nf.format(e.value),
                                         style: pw.TextStyle(
                                           font: pf,
                                           fontSize: 10,
                                         ),
-                                        textAlign:
-                                        pw.TextAlign.right,
+                                        textAlign: pw.TextAlign.right,
                                       ),
                                     ),
                                   ],
@@ -1125,9 +1123,10 @@ class _PayslipScreenState extends State<PayslipScreen> {
                               pw.TableRow(
                                 children: [
                                   pw.Padding(
-                                    padding: const pw.EdgeInsets
-                                        .symmetric(
-                                        vertical: 6, horizontal: 4),
+                                    padding: const pw.EdgeInsets.symmetric(
+                                      vertical: 6,
+                                      horizontal: 4,
+                                    ),
                                     child: pw.Text(
                                       'TOTAL EARNINGS',
                                       style: pw.TextStyle(
@@ -1137,17 +1136,17 @@ class _PayslipScreenState extends State<PayslipScreen> {
                                     ),
                                   ),
                                   pw.Padding(
-                                    padding: const pw.EdgeInsets
-                                        .symmetric(
-                                        vertical: 6, horizontal: 4),
+                                    padding: const pw.EdgeInsets.symmetric(
+                                      vertical: 6,
+                                      horizontal: 4,
+                                    ),
                                     child: pw.Text(
                                       nf.format(gross),
                                       style: pw.TextStyle(
                                         font: pb,
                                         fontSize: 10,
                                       ),
-                                      textAlign:
-                                      pw.TextAlign.right,
+                                      textAlign: pw.TextAlign.right,
                                     ),
                                   ),
                                 ],
@@ -1167,8 +1166,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
                         borderRadius: pw.BorderRadius.circular(6),
                       ),
                       child: pw.Column(
-                        crossAxisAlignment:
-                        pw.CrossAxisAlignment.start,
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
                         children: [
                           pw.Container(
                             padding: const pw.EdgeInsets.symmetric(vertical: 4),
@@ -1200,9 +1198,10 @@ class _PayslipScreenState extends State<PayslipScreen> {
                                 pw.TableRow(
                                   children: [
                                     pw.Padding(
-                                      padding: const pw.EdgeInsets
-                                          .symmetric(
-                                          vertical: 6, horizontal: 4),
+                                      padding: const pw.EdgeInsets.symmetric(
+                                        vertical: 6,
+                                        horizontal: 4,
+                                      ),
                                       child: pw.Text(
                                         d.key,
                                         style: pw.TextStyle(
@@ -1212,17 +1211,17 @@ class _PayslipScreenState extends State<PayslipScreen> {
                                       ),
                                     ),
                                     pw.Padding(
-                                      padding: const pw.EdgeInsets
-                                          .symmetric(
-                                          vertical: 6, horizontal: 4),
+                                      padding: const pw.EdgeInsets.symmetric(
+                                        vertical: 6,
+                                        horizontal: 4,
+                                      ),
                                       child: pw.Text(
                                         nf.format(d.value),
                                         style: pw.TextStyle(
                                           font: pf,
                                           fontSize: 10,
                                         ),
-                                        textAlign:
-                                        pw.TextAlign.right,
+                                        textAlign: pw.TextAlign.right,
                                       ),
                                     ),
                                   ],
@@ -1230,9 +1229,10 @@ class _PayslipScreenState extends State<PayslipScreen> {
                               pw.TableRow(
                                 children: [
                                   pw.Padding(
-                                    padding: const pw.EdgeInsets
-                                        .symmetric(
-                                        vertical: 6, horizontal: 4),
+                                    padding: const pw.EdgeInsets.symmetric(
+                                      vertical: 6,
+                                      horizontal: 4,
+                                    ),
                                     child: pw.Text(
                                       'TOTAL DEDUCTIONS',
                                       style: pw.TextStyle(
@@ -1242,17 +1242,17 @@ class _PayslipScreenState extends State<PayslipScreen> {
                                     ),
                                   ),
                                   pw.Padding(
-                                    padding: const pw.EdgeInsets
-                                        .symmetric(
-                                        vertical: 6, horizontal: 4),
+                                    padding: const pw.EdgeInsets.symmetric(
+                                      vertical: 6,
+                                      horizontal: 4,
+                                    ),
                                     child: pw.Text(
                                       nf.format(totalDeductions),
                                       style: pw.TextStyle(
                                         font: pb,
                                         fontSize: 10,
                                       ),
-                                      textAlign:
-                                      pw.TextAlign.right,
+                                      textAlign: pw.TextAlign.right,
                                     ),
                                   ),
                                 ],
@@ -1276,7 +1276,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
                 child: pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
-
                     pw.Text(
                       'GROSS SALARY',
                       style: pw.TextStyle(font: pf, fontSize: 10),
@@ -1327,14 +1326,16 @@ class _PayslipScreenState extends State<PayslipScreen> {
     );
     return doc.save();
   }
-  Future<Uint8List> _generateSinglePayslipPdfBytes(Map<String, dynamic> p,
-      {Uint8List? logoBytes}) async {
+
+  Future<Uint8List> _generateSinglePayslipPdfBytes(
+    Map<String, dynamic> p, {
+    Uint8List? logoBytes,
+  }) async {
     return _generateMultiPayslipPdfBytes([p], logoBytes: logoBytes);
   }
   // -------------------------
   // Save PDF to Downloads (Option A)
   // -------------------------
-
 
   Future<void> _savePdfToDownloads(Uint8List bytes, String fileName) async {
     try {
@@ -1355,52 +1356,49 @@ class _PayslipScreenState extends State<PayslipScreen> {
       await OpenFilex.open(filePath);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Payslip saved to Downloads"),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Payslip saved to Downloads")));
       }
     } catch (e) {
       debugPrint("PDF SAVE ERROR: $e");
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Failed to save PDF"),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Failed to save PDF")));
       }
     }
   }
+
   // -------------------------
   // Download single payslip
   // -------------------------
-  Future<void> _downloadSinglePayslipDirect(
-      Map<String, dynamic> p) async {
+  Future<void> _downloadSinglePayslipDirect(Map<String, dynamic> p) async {
     setState(() => isLoading = true);
     try {
-      final logoBytes = _cachedLogoBytes ??
+      final logoBytes =
+          _cachedLogoBytes ??
           await _getLogoBytes(await _resolveLogoPublicUrl());
-      final bytes =
-      await _generateSinglePayslipPdfBytes(p, logoBytes: logoBytes);
+      final bytes = await _generateSinglePayslipPdfBytes(
+        p,
+        logoBytes: logoBytes,
+      );
       final fileName =
-          'Payslip_${employee?['employee_id'] ?? 'employee'}_${DateFormat('MMMM_yyyy').format(
-        DateTime(p['year'] ?? selectedYear,
-            p['month'] ?? selectedMonth),
-      )}.pdf';
+          'Payslip_${employee?['employee_id'] ?? 'employee'}_${DateFormat('MMMM_yyyy').format(DateTime(p['year'] ?? selectedYear, p['month'] ?? selectedMonth))}.pdf';
       await _savePdfToDownloads(bytes, fileName);
     } catch (e) {
       debugPrint('download single pdf error: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error generating PDF: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error generating PDF: $e')));
       }
     } finally {
       setState(() => isLoading = false);
     }
   }
+
   // -------------------------
   // Bulk export (reads stored payslips only)
   // -------------------------
@@ -1414,10 +1412,8 @@ class _PayslipScreenState extends State<PayslipScreen> {
         final dt = DateTime(now.year, now.month - i);
         monthsNeeded.add({'month': dt.month, 'year': dt.year});
       }
-      final monthsSet =
-      monthsNeeded.map((m) => m['month']!).toSet().toList();
-      final yearsSet =
-      monthsNeeded.map((m) => m['year']!).toSet().toList();
+      final monthsSet = monthsNeeded.map((m) => m['month']!).toSet().toList();
+      final yearsSet = monthsNeeded.map((m) => m['year']!).toSet().toList();
       final res = await supabase
           .from('payslips')
           .select()
@@ -1447,30 +1443,34 @@ class _PayslipScreenState extends State<PayslipScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content:
-                Text('No payslips available for the selected months.')),
+              content: Text('No payslips available for the selected months.'),
+            ),
           );
         }
         return;
       }
-      final logoBytes = _cachedLogoBytes ??
+      final logoBytes =
+          _cachedLogoBytes ??
           await _getLogoBytes(await _resolveLogoPublicUrl());
-      final bytes =
-      await _generateMultiPayslipPdfBytes(pages, logoBytes: logoBytes);
+      final bytes = await _generateMultiPayslipPdfBytes(
+        pages,
+        logoBytes: logoBytes,
+      );
       final fileName =
           'payslips-${employee?['employee_id']}-last$monthsCount.pdf';
       await _savePdfToDownloads(bytes, fileName);
     } catch (e) {
       debugPrint('Bulk export error: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Bulk export failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Bulk export failed: $e')));
       }
     } finally {
       setState(() => isLoading = false);
     }
   }
+
   // -------------------------
   // UI helpers
   // -------------------------
@@ -1499,8 +1499,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
               color: Colors.blue[50],
               shape: BoxShape.circle,
             ),
-            child: Icon(Icons.person,
-                color: Colors.blue[700], size: 30),
+            child: Icon(Icons.person, color: Colors.blue[700], size: 30),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1529,10 +1528,10 @@ class _PayslipScreenState extends State<PayslipScreen> {
       ),
     );
   }
+
   Widget _periodSelectorCard() {
     final months = List.generate(12, (i) => i + 1);
-    final years = List.generate(
-        5, (i) => DateTime.now().year - 4 + i)
+    final years = List.generate(5, (i) => DateTime.now().year - 4 + i)
       ..sort((a, b) => b.compareTo(a));
     return Container(
       decoration: BoxDecoration(
@@ -1558,8 +1557,11 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   color: Colors.blue[50],
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(Icons.calendar_today,
-                    color: Colors.blue[800], size: 20),
+                child: Icon(
+                  Icons.calendar_today,
+                  color: Colors.blue[800],
+                  size: 20,
+                ),
               ),
               const SizedBox(width: 10),
               Text(
@@ -1601,21 +1603,18 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   items: months
                       .map(
                         (m) => DropdownMenuItem(
-                      value: m,
-                      child: Text(
-                        DateFormat.MMMM().format(
-                          DateTime(2020, m),
+                          value: m,
+                          child: Text(
+                            DateFormat.MMMM().format(DateTime(2020, m)),
+                            style: GoogleFonts.montserrat(),
+                          ),
                         ),
-                        style: GoogleFonts.montserrat(),
-                      ),
-                    ),
-                  )
+                      )
                       .toList(),
                   onChanged: (val) async {
                     if (val == null) return;
                     setState(() => selectedMonth = val);
-                    await _processPeriodChange(
-                        selectedMonth, selectedYear);
+                    await _processPeriodChange(selectedMonth, selectedYear);
                   },
                 ),
               ),
@@ -1639,19 +1638,18 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   items: years
                       .map(
                         (y) => DropdownMenuItem(
-                      value: y,
-                      child: Text(
-                        y.toString(),
-                        style: GoogleFonts.montserrat(),
-                      ),
-                    ),
-                  )
+                          value: y,
+                          child: Text(
+                            y.toString(),
+                            style: GoogleFonts.montserrat(),
+                          ),
+                        ),
+                      )
                       .toList(),
                   onChanged: (val) async {
                     if (val == null) return;
                     setState(() => selectedYear = val);
-                    await _processPeriodChange(
-                        selectedMonth, selectedYear);
+                    await _processPeriodChange(selectedMonth, selectedYear);
                   },
                 ),
               ),
@@ -1661,14 +1659,14 @@ class _PayslipScreenState extends State<PayslipScreen> {
       ),
     );
   }
+
   Widget _actionsRow() {
     return Row(
       children: [
         Expanded(
           child: ElevatedButton.icon(
             onPressed: _showBulkOptionsMenu,
-            icon: const Icon(Icons.file_download_outlined,
-                color: Colors.white),
+            icon: const Icon(Icons.file_download_outlined, color: Colors.white),
             label: Text(
               'Bulk Download',
               style: GoogleFonts.montserrat(color: Colors.white),
@@ -1690,8 +1688,8 @@ class _PayslipScreenState extends State<PayslipScreen> {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                        content:
-                        Text('No payslip available to download')),
+                      content: Text('No payslip available to download'),
+                    ),
                   );
                 }
                 return;
@@ -1699,8 +1697,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
 
               await _downloadSinglePayslipDirect(payslip!);
             },
-            icon: const Icon(Icons.download_outlined,
-                color: Colors.white),
+            icon: const Icon(Icons.download_outlined, color: Colors.white),
             label: Text(
               'Download PDF',
               style: GoogleFonts.montserrat(color: Colors.white),
@@ -1717,6 +1714,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
       ],
     );
   }
+
   void _showBulkOptionsMenu() {
     showModalBottomSheet(
       context: context,
@@ -1759,6 +1757,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
       },
     );
   }
+
   Widget _infoChipAndBanner() {
     return Column(
       children: [
@@ -1770,11 +1769,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
               style: GoogleFonts.montserrat(fontSize: 13),
             ),
             backgroundColor: Colors.blue[50],
-            avatar: const Icon(
-              Icons.autorenew,
-              size: 16,
-              color: Colors.blue,
-            ),
+            avatar: const Icon(Icons.autorenew, size: 16, color: Colors.blue),
           ),
         ),
         const SizedBox(height: 8),
@@ -1810,6 +1805,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
       ],
     );
   }
+
   Widget _payslipCardOrMessage() {
     if (isFuturePeriod || !isAccessGranted) {
       return Container(
@@ -1918,11 +1914,26 @@ class _PayslipScreenState extends State<PayslipScreen> {
               runSpacing: 10,
               children: [
                 _infoPair('EMPLOYEE NAME', employee?['full_name'] ?? '--'),
-                _infoPair('EMPLOYEE CODE', employee?['employee_id']?.toString() ?? '--'),
-                _infoPair('DEPARTMENT', employee?['department']?.toString() ?? '--'),
-                _infoPair('DESIGNATION', employee?['designation']?.toString() ?? '--'),
-                _infoPair('PAN NUMBER', employee?['pan_no']?.toString() ?? '--'),
-                _infoPair('UAN NUMBER', employee?['uan_no']?.toString() ?? '--'),
+                _infoPair(
+                  'EMPLOYEE CODE',
+                  employee?['employee_id']?.toString() ?? '--',
+                ),
+                _infoPair(
+                  'DEPARTMENT',
+                  employee?['department']?.toString() ?? '--',
+                ),
+                _infoPair(
+                  'DESIGNATION',
+                  employee?['designation']?.toString() ?? '--',
+                ),
+                _infoPair(
+                  'PAN NUMBER',
+                  employee?['pan_no']?.toString() ?? '--',
+                ),
+                _infoPair(
+                  'UAN NUMBER',
+                  employee?['uan_no']?.toString() ?? '--',
+                ),
                 _infoPair(
                   'DATE OF JOINING',
                   employee?['date_of_joining'] != null
@@ -1953,16 +1964,16 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   children: [
                     Expanded(
                       child: _attItem(
-                          'TOTAL DAYS IN MONTH',
-                          (payslip?['total_monthly_days'] ?? '--')
-                              .toString()),
+                        'TOTAL DAYS IN MONTH',
+                        (payslip?['total_monthly_days'] ?? '--').toString(),
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: _attItem(
-                          'TOTAL WORKING DAYS',
-                          (payslip?['effective_work_days'] ?? '--')
-                              .toString()),
+                        'TOTAL WORKING DAYS',
+                        (payslip?['effective_work_days'] ?? '--').toString(),
+                      ),
                     ),
                   ],
                 ),
@@ -1971,14 +1982,17 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   children: [
                     Expanded(
                       child: _attItem(
-                          'WEEKLY OFFS, LEAVES & HOLIDAYS',
-                          (payslip?['weekly_offs_leaves_holidays'] ?? '--')
-                              .toString()),
+                        'WEEKLY OFFS, LEAVES & HOLIDAYS',
+                        (payslip?['weekly_offs_leaves_holidays'] ?? '--')
+                            .toString(),
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: _attItem('LOP/ABSENT',
-                          (payslip?['lop_absent'] ?? '0').toString()),
+                      child: _attItem(
+                        'LOP/ABSENT',
+                        (payslip?['lop_absent'] ?? '0').toString(),
+                      ),
                     ),
                   ],
                 ),
@@ -1989,8 +2003,8 @@ class _PayslipScreenState extends State<PayslipScreen> {
                       child: _attItem(
                         'PAY DAYS',
                         (payslip?['pay_days'] ??
-                            payslip?['total_monthly_days'] ??
-                            '--')
+                                payslip?['total_monthly_days'] ??
+                                '--')
                             .toString(),
                       ),
                     ),
@@ -2026,21 +2040,16 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                ..._earningsRowsFromPayslip(payslip!)
-                    .map(
-                      (w) => Padding(
-                    padding:
-                    const EdgeInsets.symmetric(vertical: 4),
+                ..._earningsRowsFromPayslip(payslip!).map(
+                  (w) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
                     child: w,
                   ),
                 ),
                 const Divider(),
                 _kvRow(
                   'TOTAL EARNINGS',
-                  '₹ ${_formatCurrencyDouble(double.tryParse(
-                      (payslip?['total_earnings'] ?? '0')
-                          .toString()) ??
-                      0)}',
+                  '₹ ${_formatCurrencyDouble(double.tryParse((payslip?['total_earnings'] ?? '0').toString()) ?? 0)}',
                   isBold: true,
                   valueColor: Colors.green[700],
                 ),
@@ -2074,21 +2083,16 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                ..._deductionRowsFromPayslip(payslip!)
-                    .map(
-                      (w) => Padding(
-                    padding:
-                    const EdgeInsets.symmetric(vertical: 4),
+                ..._deductionRowsFromPayslip(payslip!).map(
+                  (w) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
                     child: w,
                   ),
                 ),
                 const Divider(),
                 _kvRow(
                   'TOTAL DEDUCTIONS',
-                  '₹ ${_formatCurrencyDouble(double.tryParse(
-                      (payslip?['total_deductions'] ?? '0')
-                          .toString()) ??
-                      0)}',
+                  '₹ ${_formatCurrencyDouble(double.tryParse((payslip?['total_deductions'] ?? '0').toString()) ?? 0)}',
                   isBold: true,
                   valueColor: Colors.red[700],
                 ),
@@ -2099,8 +2103,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
           // Net pay
           Container(
             width: double.infinity,
-            padding:
-            const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
+            padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
             decoration: BoxDecoration(
               color: Colors.blue[50],
               borderRadius: BorderRadius.circular(14),
@@ -2127,9 +2130,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  '₹ ${_formatCurrencyDouble(double.tryParse(
-                      (payslip?['net_pay'] ?? '0').toString()) ??
-                      0)}',
+                  '₹ ${_formatCurrencyDouble(double.tryParse((payslip?['net_pay'] ?? '0').toString()) ?? 0)}',
                   style: GoogleFonts.montserrat(
                     color: Colors.blue[900],
                     fontWeight: FontWeight.bold,
@@ -2143,6 +2144,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
       ),
     );
   }
+
   Widget _infoPair(String title, String value) {
     return SizedBox(
       width: 170,
@@ -2165,10 +2167,10 @@ class _PayslipScreenState extends State<PayslipScreen> {
       ),
     );
   }
+
   Widget _attItem(String label, String value) {
     return Container(
-      padding:
-      const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(10),
@@ -2203,8 +2205,13 @@ class _PayslipScreenState extends State<PayslipScreen> {
       ),
     );
   }
-  Widget _kvRow(String left, String right,
-      {bool isBold = false, Color? valueColor}) {
+
+  Widget _kvRow(
+    String left,
+    String right, {
+    bool isBold = false,
+    Color? valueColor,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
@@ -2230,48 +2237,39 @@ class _PayslipScreenState extends State<PayslipScreen> {
     );
   }
 
-
   List<Widget> _earningsRowsFromPayslip(Map<String, dynamic> p) {
     if (p['payslip_line_items'] != null && p['payslip_line_items'].isNotEmpty) {
       final items = List<Map<String, dynamic>>.from(p['payslip_line_items']);
       return items
           .where((e) => e['component_type'] == 'earning')
-          .map((e) => _kvRow(
-        e['component_name'].toString().toUpperCase(),
-        '₹ ${_formatCurrencyDouble(
-          double.tryParse(e['component_amount'].toString()) ?? 0,
-        )}',
-      ))
+          .map(
+            (e) => _kvRow(
+              e['component_name'].toString().toUpperCase(),
+              '₹ ${_formatCurrencyDouble(double.tryParse(e['component_amount'].toString()) ?? 0)}',
+            ),
+          )
           .toList();
     }
 
     final rows = <Widget>[];
     for (final cfg in salaryConfig) {
       final name = (cfg['component_name'] ?? cfg['name'] ?? '').toString();
-      final type =
-      (cfg['component_type'] ?? 'earning').toString().toLowerCase();
+      final type = (cfg['component_type'] ?? 'earning')
+          .toString()
+          .toLowerCase();
       if (type != 'earning') continue;
       final key = name.toLowerCase().replaceAll(' ', '_');
       final value = double.tryParse(p[key]?.toString() ?? '0') ?? 0.0;
       if (value == 0) continue;
-      rows.add(
-        _kvRow(
-          name.toUpperCase(),
-          '₹ ${_formatCurrencyDouble(value)}',
-        ),
-      );
+      rows.add(_kvRow(name.toUpperCase(), '₹ ${_formatCurrencyDouble(value)}'));
     }
     if (salaryConfig.isEmpty) {
       void addIfPresent(String label, dynamic value) {
         final v = double.tryParse((value ?? '0').toString()) ?? 0.0;
         if (v == 0) return;
-        rows.add(
-          _kvRow(
-            label,
-            '₹ ${_formatCurrencyDouble(v)}',
-          ),
-        );
+        rows.add(_kvRow(label, '₹ ${_formatCurrencyDouble(v)}'));
       }
+
       addIfPresent('BASIC PAY', p['basic_pay']);
       addIfPresent('HRA', p['hra']);
       addIfPresent('SPECIAL ALLOWANCE', p['special_allowance']);
@@ -2283,17 +2281,18 @@ class _PayslipScreenState extends State<PayslipScreen> {
     }
     return rows;
   }
+
   List<Widget> _deductionRowsFromPayslip(Map<String, dynamic> p) {
     if (p['payslip_line_items'] != null && p['payslip_line_items'].isNotEmpty) {
       final items = List<Map<String, dynamic>>.from(p['payslip_line_items']);
       return items
           .where((e) => e['component_type'] == 'deduction')
-          .map((e) => _kvRow(
-        e['component_name'].toString().toUpperCase(),
-        '₹ ${_formatCurrencyDouble(
-          double.tryParse(e['component_amount'].toString()) ?? 0,
-        )}',
-      ))
+          .map(
+            (e) => _kvRow(
+              e['component_name'].toString().toUpperCase(),
+              '₹ ${_formatCurrencyDouble(double.tryParse(e['component_amount'].toString()) ?? 0)}',
+            ),
+          )
           .toList();
     }
 
@@ -2310,28 +2309,20 @@ class _PayslipScreenState extends State<PayslipScreen> {
     deductionMap.forEach((key, label) {
       final value = double.tryParse(p[key]?.toString() ?? '0') ?? 0.0;
       if (value == 0) return;
-      rows.add(
-        _kvRow(
-          label,
-          '₹ ${_formatCurrencyDouble(value)}',
-        ),
-      );
+      rows.add(_kvRow(label, '₹ ${_formatCurrencyDouble(value)}'));
     });
     if (rows.isEmpty && salaryConfig.isNotEmpty) {
       for (final cfg in salaryConfig) {
-        final type =
-        (cfg['component_type'] ?? 'earning').toString().toLowerCase();
+        final type = (cfg['component_type'] ?? 'earning')
+            .toString()
+            .toLowerCase();
         if (type != 'deduction') continue;
-        final name =
-        (cfg['component_name'] ?? cfg['name'] ?? '').toString();
+        final name = (cfg['component_name'] ?? cfg['name'] ?? '').toString();
         final key = name.toLowerCase().replaceAll(' ', '_');
         final value = double.tryParse(p[key]?.toString() ?? '0') ?? 0.0;
         if (value == 0) continue;
         rows.add(
-          _kvRow(
-            name.toUpperCase(),
-            '₹ ${_formatCurrencyDouble(value)}',
-          ),
+          _kvRow(name.toUpperCase(), '₹ ${_formatCurrencyDouble(value)}'),
         );
       }
     }
@@ -2339,109 +2330,105 @@ class _PayslipScreenState extends State<PayslipScreen> {
       void addIfPresent(String label, dynamic value) {
         final v = double.tryParse((value ?? '0').toString()) ?? 0.0;
         if (v == 0) return;
-        rows.add(
-          _kvRow(
-            label,
-            '₹ ${_formatCurrencyDouble(v)}',
-          ),
-        );
+        rows.add(_kvRow(label, '₹ ${_formatCurrencyDouble(v)}'));
       }
+
       addIfPresent('EMPLOYEE PF', p['employee_pf']);
       addIfPresent('EMPLOYEE ESI', p['employee_esi']);
       addIfPresent('PROFESSIONAL TAX', p['professional_tax']);
       addIfPresent('TDS/INCOME TAX', p['tds_income_tax']);
-      addIfPresent(
-          'HEALTH EDUCATION CESS', p['health_education_cess']);
-      addIfPresent(
-          'EXCESS LEAVE DEDUCTION', p['excess_leave_deduction']);
+      addIfPresent('HEALTH EDUCATION CESS', p['health_education_cess']);
+      addIfPresent('EXCESS LEAVE DEDUCTION', p['excess_leave_deduction']);
       addIfPresent('LOAN DEDUCTION', p['loan_deduction']);
       addIfPresent('OTHER DEDUCTIONS', p['other_deductions']);
     }
     return rows;
   }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
-      backgroundColor: const Color(0xFFF5F6FA),
-
+      backgroundColor: EmployeeUi.pageBg,
       endDrawer: AppDrawer(
         userEmail: widget.userEmail,
         userData: employee ?? {},
         companyLogoUrl: organization?['logo_url'],
-        // ✅ FIX
-        fetchHrmsContext: widget.fetchHrmsContext, // ✅ FIX
+        fetchHrmsContext: widget.fetchHrmsContext,
         currentRoute: DrawerRoute.payroll,
-
       ),
-
-
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0.5,
-        title: Text(
-          'My Payslips',
-          style: GoogleFonts.montserrat(
-            color: Colors.black87,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        iconTheme: const IconThemeData(color: Colors.black87),
-
-        // ✅ MENU ICON (THIS WAS THE REAL MISSING PIECE)
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.menu),
-            onPressed: () {
-              _scaffoldKey.currentState?.openEndDrawer();
-            },
-          ),
-        ],
-      ),
-
-      // 🔥 BODY + TOFFY OVERLAY
-      body: Stack(
-        children: [
-          isLoading
-              ? const SkeletonPayslipPage()
-              : SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Text(
-                    'My Payslips',
-                    style: GoogleFonts.montserrat(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 24,
-                    ),
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 140,
+            floating: false,
+            pinned: true,
+            automaticallyImplyLeading: false,
+            backgroundColor: Colors.white,
+            elevation: 0,
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 16, top: 12),
+                child: Container(
+                  decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))]),
+                  child: IconButton(
+                    icon: SvgPicture.asset("assets/icons/menu.svg", width: 20, height: 20, colorFilter: const ColorFilter.mode(EmployeeUi.primary, BlendMode.srcIn)),
+                    onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'View and download your payslips',
-                    style: GoogleFonts.montserrat(
-                      color: Colors.grey[700],
-                      fontSize: 13,
-                    ),
+                ),
+              ),
+              const SizedBox(width: 1),
+            ],
+            flexibleSpace: FlexibleSpaceBar(
+              background: Container(
+                padding: const EdgeInsets.fromLTRB(24, 40, 24, 20),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFFEBDFF6), Colors.white],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
-                  const SizedBox(height: 12),
-                  _employeeCard(),
-                  const SizedBox(height: 12),
-                  _periodSelectorCard(),
-                  const SizedBox(height: 12),
-                  _actionsRow(),
-                  const SizedBox(height: 12),
-                  _infoChipAndBanner(),
-                  const SizedBox(height: 12),
-                  _payslipCardOrMessage(),
-                ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Text("Payroll & Payslips", style: EmployeeUi.header(24)),
+                    const SizedBox(height: 4),
+                    Text("View and download your salary statements", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
+                  ],
+                ),
               ),
             ),
           ),
+          SliverToBoxAdapter(
+            child: isLoading
+                ? const SkeletonPayslipPage()
+                : Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        const EmployeeSectionHeader(
+                          title: 'My Payslips',
+                          subtitle: 'View and download your payslips',
+                        ),
+                        const SizedBox(height: 12),
+                        _employeeCard(),
+                        const SizedBox(height: 12),
+                        _periodSelectorCard(),
+                        const SizedBox(height: 12),
+                        _actionsRow(),
+                        const SizedBox(height: 12),
+                        _infoChipAndBanner(),
+                        const SizedBox(height: 12),
+                        _payslipCardOrMessage(),
+                      ],
+                    ),
+                  ),
+                ),
 
           // 🤖 TOFFY CHAT OVERLAY
-
         ],
       ),
 
@@ -2481,7 +2468,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
                     userData: widget.userData,
                     fetchHrmsContext: widget.fetchHrmsContext,
                   ),
-
                 ),
               );
               break;
@@ -2492,7 +2478,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
                 MaterialPageRoute(
                   builder: (_) => TimeAttendanceScreen(
                     userEmail: widget.userEmail,
-                    userData: widget.userData,                 // ✅ FIX
+                    userData: widget.userData, // ✅ FIX
                     fetchHrmsContext: widget.fetchHrmsContext, // ✅ FIX
                   ),
                 ),
@@ -2500,15 +2486,12 @@ class _PayslipScreenState extends State<PayslipScreen> {
               break;
 
             case 3:
-            // ✅ CORRECT: already on Payslip → do nothing
+              // ✅ CORRECT: already on Payslip → do nothing
               break;
 
             case 4:
               _scaffoldKey.currentState?.openEndDrawer();
               break;
-
-
-
           }
         },
 
@@ -2553,9 +2536,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
             ),
             label: 'More',
           ),
-
-
-
         ],
       ),
     );

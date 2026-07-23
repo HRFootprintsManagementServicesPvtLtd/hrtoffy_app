@@ -46,6 +46,7 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
   }
 
   Future<void> _initWorkflow() async {
+    if (!mounted) return;
     setState(() => loading = true);
     try {
       await _ensureManagerProfile();
@@ -76,7 +77,7 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
   Future<void> _fetchTeamScope() async {
     if (managerProfile == null) return;
     final myId = managerProfile!['id'];
-    final role = managerProfile!['emp_role'] ?? 'manager';
+    final role = (managerProfile!['emp_role'] ?? 'manager').toString().toLowerCase();
     final isHR = ['hr_head', 'hr_manager', 'admin', 'super_admin'].contains(role);
 
     if (isHR) {
@@ -85,10 +86,9 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
       try {
         final hierarchy = await supabase.rpc('get_manager_full_hierarchy', params: {'p_manager_id': myId});
         if (hierarchy is List) {
-          teamMemberIds = hierarchy.map((i) {
-            if (i is Map) return i['id'].toString();
-            return i.toString();
-          }).toList();
+          teamMemberIds = hierarchy.map((i) => (i is Map ? i['id'] : i).toString()).toList();
+        } else {
+          teamMemberIds = [myId.toString()];
         }
       } catch (e) {
         debugPrint("Hierarchy RPC Error: $e");
@@ -133,21 +133,29 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
 
   Future<void> handleAction(dynamic request, String action, String comments) async {
     if (managerProfile == null) return;
-    final myId = managerProfile!['id'];
     final isApprove = action == 'approve';
 
     try {
       double hoursWorked = 0;
-      if (isApprove) {
+      final reqDate = request['date'];
+      
+      String? punchInFull;
+      String? punchOutFull;
+      
+      if (request['requested_punch_in'] != null) {
+        punchInFull = "$reqDate ${request['requested_punch_in']}";
+      }
+      if (request['requested_punch_out'] != null) {
+        punchOutFull = "$reqDate ${request['requested_punch_out']}";
+      }
+
+      if (isApprove && punchInFull != null && punchOutFull != null) {
         try {
-          final startStr = "${request['date']} ${request['requested_punch_in']}";
-          final endStr = "${request['date']} ${request['requested_punch_out']}";
-          final start = DateTime.parse(startStr);
-          final end = DateTime.parse(endStr);
+          final start = DateTime.parse(punchInFull);
+          final end = DateTime.parse(punchOutFull);
           hoursWorked = end.difference(start).inMinutes / 60.0;
         } catch (_) {}
       }
-
       await supabase.from('attendance_regularization_requests').update({
         'status': isApprove ? 'approved' : 'rejected',
         'manager_comments': comments,
@@ -158,18 +166,18 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
         final attendanceData = {
           'employee_id': request['employee_id'],
           'organization_id': request['organization_id'],
-          'date': request['date'],
-          'punch_in_time': _extractTimeOnly(request['requested_punch_in']),
-          'punch_out_time': _extractTimeOnly(request['requested_punch_out']),
-          'check_in_time': _extractTimeOnly(request['requested_punch_in']),
-          'check_out_time': _extractTimeOnly(request['requested_punch_out']),
+          'date': reqDate,
+          'punch_in_time': punchInFull != null ? DateTime.parse(punchInFull).toUtc().toIso8601String() : null,
+          'punch_out_time': punchOutFull != null ? DateTime.parse(punchOutFull).toUtc().toIso8601String() : null,
+          'check_in_time': punchInFull != null ? DateTime.parse(punchInFull).toUtc().toIso8601String() : null,
+          'check_out_time': punchOutFull != null ? DateTime.parse(punchOutFull).toUtc().toIso8601String() : null,
           'hours_worked': hoursWorked,
           'actual_working_hours': hoursWorked,
           'total_hours': hoursWorked,
           'status': 'present',
           'is_override': true,
           'override_reason': request['reason'],
-          'override_at': DateTime.now().toIso8601String(),
+          'override_at': DateTime.now().toUtc().toIso8601String(),
           'comments': "Regularized: $comments",
         };
 
@@ -194,14 +202,87 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
     }
   }
 
-  String _extractTimeOnly(String? isoString) {
-    if (isoString == null || !isoString.contains('T')) return isoString ?? '';
-    try {
-      final dt = DateTime.parse(isoString).toLocal();
-      return DateFormat('HH:mm:ss').format(dt);
-    } catch (_) {
-      return isoString;
-    }
+  void _showReviewDialog(BuildContext context, dynamic request) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text("Review Regularization", style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, fontSize: 18)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(12)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Reason:", style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+                  const SizedBox(height: 4),
+                  Text(request['reason'] ?? '-', style: GoogleFonts.montserrat(fontSize: 13, color: Colors.black87)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text("Decision Comments", style: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            TextField(
+              controller: controller,
+              maxLines: 3,
+              decoration: InputDecoration(
+                hintText: "Add your decision notes...",
+                hintStyle: const TextStyle(fontSize: 12),
+                filled: true,
+                fillColor: Colors.grey.shade50,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              ),
+            ),
+          ],
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    handleAction(request, 'reject', controller.text);
+                  }, 
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade600, 
+                    foregroundColor: Colors.white, 
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ), 
+                  child: const Text("Reject", style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    handleAction(request, 'approve', controller.text);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade600, 
+                    foregroundColor: Colors.white, 
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ), 
+                  child: const Text("Approve", style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -226,7 +307,7 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))],
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 10, offset: const Offset(0, 4))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -259,7 +340,11 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
       decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12)),
       child: TabBar(
         controller: _tabController,
-        indicator: BoxDecoration(color: Colors.blue.shade600, borderRadius: BorderRadius.circular(10)),
+        indicator: BoxDecoration(
+          color: Colors.blue.shade600, 
+          borderRadius: BorderRadius.circular(10),
+          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 4, offset: const Offset(0, 2))]
+        ),
         labelColor: Colors.white,
         unselectedLabelColor: Colors.grey.shade600,
         indicatorSize: TabBarIndicatorSize.tab,
@@ -280,7 +365,7 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
       itemBuilder: (context, index) => _RegularizationCard(
         request: requests[index],
         isHistory: _tabController.index == 1,
-        onReview: (action, comments) => handleAction(requests[index], action, comments),
+        onShowReview: () => _showReviewDialog(context, requests[index]),
       ),
     );
   }
@@ -289,9 +374,9 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
 class _RegularizationCard extends StatelessWidget {
   final dynamic request;
   final bool isHistory;
-  final Function(String, String) onReview;
+  final VoidCallback onShowReview;
 
-  const _RegularizationCard({required this.request, required this.isHistory, required this.onReview});
+  const _RegularizationCard({required this.request, required this.isHistory, required this.onShowReview});
 
   String _formatTime(String? isoTime) {
     if (isoTime == null || isoTime == "Not recorded" || isoTime == "-") return isoTime ?? "Not recorded";
@@ -300,22 +385,11 @@ class _RegularizationCard extends StatelessWidget {
       if (isoTime.contains('T')) {
         dt = DateTime.parse(isoTime).toLocal();
       } else {
-        // Fallback for simple time strings if present
         dt = DateFormat("HH:mm:ss").parse(isoTime);
       }
       return DateFormat("hh:mm a").format(dt);
     } catch (e) {
       return isoTime;
-    }
-  }
-
-  String _extractTimeOnly(String? isoString) {
-    if (isoString == null || !isoString.contains('T')) return isoString ?? '';
-    try {
-      final dt = DateTime.parse(isoString).toLocal();
-      return DateFormat('HH:mm:ss').format(dt);
-    } catch (_) {
-      return isoString;
     }
   }
 
@@ -375,7 +449,7 @@ class _RegularizationCard extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: () => _showReviewDialog(context),
+                onPressed: onShowReview,
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade600, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), elevation: 0),
                 child: const Text("Review Request"),
               ),
@@ -426,43 +500,8 @@ class _RegularizationCard extends StatelessWidget {
     Color color = status == 'approved' ? Colors.green : (status == 'rejected' ? Colors.red : Colors.orange);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: color.withOpacity(0.08), borderRadius: BorderRadius.circular(4)),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(4)),
       child: Text(status.toUpperCase(), style: GoogleFonts.montserrat(color: color, fontSize: 8, fontWeight: FontWeight.bold)),
-    );
-  }
-
-  void _showReviewDialog(BuildContext context) {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text("Review Regularization", style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, fontSize: 16)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text("Reason: ${request['reason'] ?? '-'}", style: const TextStyle(fontSize: 13)),
-            const SizedBox(height: 12),
-            TextField(controller: controller, maxLines: 3, decoration: InputDecoration(hintText: "Add your comments...", border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
-          const SizedBox(width: 8),
-          ElevatedButton(
-            onPressed: () { Navigator.pop(ctx); onReview('reject', controller.text); }, 
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade600, foregroundColor: Colors.white, elevation: 0), 
-            child: const Text("Reject"),
-          ),
-          const SizedBox(width: 8),
-          ElevatedButton(
-            onPressed: () { Navigator.pop(ctx); onReview('approve', controller.text); }, 
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade600, foregroundColor: Colors.white, elevation: 0), 
-            child: const Text("Approve"),
-          ),
-        ],
-      ),
     );
   }
 }

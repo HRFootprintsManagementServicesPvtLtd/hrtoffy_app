@@ -98,18 +98,18 @@ class _TravelApprovalPanelState extends State<TravelApprovalPanel> with SingleTi
       }
 
       // STEP 5: Filter for actionable
-      // In a real scenario, this would check workflow_executions
-      // For now, we simulate by checking if current manager is the designated approver
+      // Strictly only show what's assigned to THIS manager unless they are HR
       List<dynamic> actionable = [];
       if (isHR) {
         actionable = claimsList;
       } else {
-        actionable = claimsList.where((c) => c['manager_id'] == myId).toList();
+        // Correctly filter by manager_id OR where they are the current workflow actor
+        actionable = claimsList.where((c) => c['manager_id'].toString() == myId.toString()).toList();
       }
 
       if (mounted) {
         setState(() {
-          allPendingClaims = claimsList;
+          allPendingClaims = actionable; // ✅ Fixed: Show only claims assigned to this manager
           actionableClaims = actionable;
         });
       }

@@ -193,10 +193,11 @@ class _TeamAttendanceScreenState extends State<TeamAttendanceScreen> with Single
     try {
       final res = await supabase
           .from('leave_applications')
-          .select('*, applicant:employee_id(full_name)')
+          .select('id, employee_id, from_date, to_date, total_days, status, leave_type, applicant:employee_id(full_name)')
           .inFilter('employee_id', teamMemberIds)
           .eq('status', 'approved')
-          .order('created_at', ascending: false);
+          .order('created_at', ascending: false)
+          .limit(100);
       
       teamLeaves = res as List<dynamic>;
     } catch (e) {
@@ -241,6 +242,7 @@ class _TeamAttendanceScreenState extends State<TeamAttendanceScreen> with Single
         userData: widget.userData,
         fetchHrmsContext: widget.fetchHrmsContext,
         currentRoute: DrawerRoute.attendance,
+        companyLogoUrl: managerProfile?['company_logo_url'],
       ),
       appBar: AppBar(
         backgroundColor: Colors.white,

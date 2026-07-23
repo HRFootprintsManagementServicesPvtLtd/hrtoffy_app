@@ -94,7 +94,7 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
       // STEP 3: Fetch from loans_advances
       final query = supabase
           .from('loans_advances')
-          .select('*, applicant:employee_id(full_name, employee_id, department, salary)')
+          .select('*, employee_records!loans_advances_employee_id_fkey(full_name, employee_id, department, salary)')
           .or('manager_id.eq.$myId,employee_id.in.(${scopedEmployeeIds.join(',')})')
           .order('application_date', ascending: false);
 
@@ -118,6 +118,7 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
       await supabase.from('loans_advances').update({
         'status': status,
         'manager_comments': comments,
+        'interest_amount': 0.0, // ✅ Fixed: Set default 0 to satisfy potential DB trigger requirement
         'updated_at': DateTime.now().toIso8601String(),
       }).eq('id', loan['id']);
 
@@ -208,7 +209,7 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
             DataColumn(label: _headerText("Actions")),
           ],
           rows: loans.map((loan) {
-            final emp = loan['applicant'] ?? {};
+            final emp = loan['employee_records'] ?? {};
             return DataRow(cells: [
               DataCell(Text(loan['loan_number'] ?? '-', style: _cellStyle(isBold: true))),
               DataCell(Column(
@@ -261,7 +262,7 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
 
   void _showReviewDialog(dynamic loan) {
     final controller = TextEditingController();
-    final emp = loan['applicant'] ?? {};
+    final emp = loan['employee_records'] ?? {};
     
     showDialog(
       context: context,

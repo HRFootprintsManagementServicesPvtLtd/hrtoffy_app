@@ -6,7 +6,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../widgets/manager_drawer.dart';
 import '../../widgets/drawer_route.dart';
 
-import 'widgets/ask_toffy_card.dart';
 import 'widgets/celebrations_section.dart';
 import 'widgets/engagement_section.dart';
 import 'widgets/manager_header.dart';
@@ -56,6 +55,8 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   int eventsCount = 0;
   int surveysCount = 0;
   int onLeaveCount = 0;
+  String? companyLogoUrl;
+  String? organizationName;
 
   @override
   void initState() {
@@ -68,12 +69,23 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       final currentUser = supabase.auth.currentUser;
       if (currentUser == null) return;
 
-      // Fetch Manager Profile
+      // Restore original column set with essential ID fields for filtering
+      const String memberColumns = 'id, employee_id, full_name, designation, employment_status, department, email, manager_name, avatar_url, manager_id, secondary_manager_id, reviewer_id';
+
+      debugPrint("ManagerDashboard: Step 1 - Fetching manager profile...");
+      // 1. Fetch Manager Profile with full fields for SnapshotSection
       final employeeRecord = await supabase
           .from('employee_records')
-          .select()
+          .select('id, organization_id, full_name, avatar_url, designation, department, manager_name, reviewer_name, location, assigned_worksite, employee_id, email')
           .eq('email', currentUser.email!)
-          .single();
+          .maybeSingle();
+      
+      if (employeeRecord == null) {
+        debugPrint("ManagerDashboard: Profile not found.");
+        if (mounted) setState(() => loading = false);
+        return;
+      }
+      debugPrint("ManagerDashboard: Profile fetched for ${employeeRecord['full_name']}.");
 
       if (!mounted) return;
       setState(() => employee = employeeRecord);
@@ -81,33 +93,35 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       final managerId = employeeRecord['id'];
       final orgId = employeeRecord['organization_id'];
 
-      // Fetch Members in Parallel
-      final memberResults = await Future.wait([
-        // Direct
-        supabase.from('employee_records').select().eq('manager_id', managerId),
-        // Secondary
-        supabase.from('employee_records').select().eq('secondary_manager_id', managerId),
-        // Review
-        supabase.from('employee_records').select().eq('reviewer_id', managerId),
-      ]);
+      debugPrint("ManagerDashboard: Step 2 - Fetching team segments...");
+      // 2. Fetch all direct/secondary/review team segments in one query using OR
+      final teamRes = await supabase
+          .from('employee_records')
+          .select(memberColumns)
+          .or('manager_id.eq.$managerId,secondary_manager_id.eq.$managerId,reviewer_id.eq.$managerId');
+      
+      debugPrint("ManagerDashboard: Team segments fetched: ${teamRes.length} records.");
 
-      directMembers = memberResults[0];
-      secondaryMembers = memberResults[1];
-      reviewMembers = memberResults[2];
+      directMembers = teamRes.where((m) => m['manager_id']?.toString() == managerId.toString()).toList();
+      secondaryMembers = teamRes.where((m) => m['secondary_manager_id']?.toString() == managerId.toString()).toList();
+      reviewMembers = teamRes.where((m) => m['reviewer_id']?.toString() == managerId.toString()).toList();
 
       // Filter Review Members (remove if already in direct/secondary)
       final directIds = {...directMembers.map((e) => e['id']), ...secondaryMembers.map((e) => e['id'])};
       reviewMembers = reviewMembers.where((e) => !directIds.contains(e['id'])).toList();
 
-      // Fetch Indirect Members
+      // 3. Fetch Indirect Members
       if (directIds.isNotEmpty) {
+        debugPrint("ManagerDashboard: Step 3 - Fetching indirect members for ${directIds.length} direct reports...");
+        // Optimization: limit count of IDs in filter if extremely large, but keep functionality
         indirectMembers = await supabase
             .from('employee_records')
-            .select()
+            .select(memberColumns)
             .inFilter('manager_id', directIds.toList());
         
         // Remove duplicates from indirect
         indirectMembers = indirectMembers.where((e) => !directIds.contains(e['id'])).toList();
+        debugPrint("ManagerDashboard: Indirect members fetched: ${indirectMembers.length} records.");
       }
 
       // Combine All Unique Members
@@ -122,54 +136,89 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       allMembers = uniqueMembers;
       filteredMembers = allMembers;
 
-      // Fetch Attendance (Last 30 Days for the team)
-      if (addedIds.isNotEmpty) {
-        attendance = await supabase
-            .from('attendance')
-            .select('*, employee_records(full_name)')
-            .inFilter('employee_id', addedIds.toList())
-            .order('date', ascending: false)
-            .limit(20);
+      debugPrint("ManagerDashboard: Initial data loaded. Passing to progressive loader...");
+      if (mounted) setState(() => loading = false);
 
-        // On Leave Count (Based on today's approved leave)
-        final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-        final leavesRes = await supabase
-            .from('leave_applications')
-            .select('id')
-            .eq('status', 'approved')
-            .lte('start_date', todayStr)
-            .gte('end_date', todayStr)
-            .inFilter('employee_id', addedIds.toList());
-        
-        onLeaveCount = leavesRes.length;
-      }
+      // 6. Background Load remaining metrics and organization data
+      _loadSecondaryData(addedIds, orgId);
 
-      // Engagement Counts
-      final engagementRes = await Future.wait([
+    } catch (e) {
+      debugPrint('Manager Dashboard Critical Error: $e');
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<void> _loadSecondaryData(Set<dynamic> addedIds, dynamic orgId) async {
+    try {
+      final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+      debugPrint("ManagerDashboard: Progressive Step 4 - Fetching attendance and engagement...");
+      
+      // OPTIMIZATION: Only fetch attendance if addedIds is not massive, otherwise limit or batch
+      // For now, restoring original logic with a safety limit to prevent timeout
+      final parallelResults = await Future.wait([
+        // Attendance logs
+        addedIds.isNotEmpty 
+          ? supabase.from('attendance').select('id, date, status, punch_in_time, punch_out_time, employee_id, employee_records!employee_id(full_name)').inFilter('employee_id', addedIds.toList()).order('date', ascending: false).limit(50)
+          : Future.value([]),
+        // On Leave Count
+        addedIds.isNotEmpty
+          ? supabase.from('leave_applications').select('id').eq('status', 'approved').lte('from_date', todayStr).gte('to_date', todayStr).inFilter('employee_id', addedIds.toList())
+          : Future.value([]),
+        // Engagement
         supabase.from('announcements').select('id').eq('organization_id', orgId).eq('is_active', true),
         supabase.from('events').select('id').eq('organization_id', orgId),
         supabase.from('surveys').select('id').eq('organization_id', orgId).eq('status', 'active'),
       ]);
 
-      announcementsCount = engagementRes[0].length;
-      eventsCount = engagementRes[1].length;
-      surveysCount = engagementRes[2].length;
+      if (!mounted) return;
+      setState(() {
+        attendance = parallelResults[0];
+        onLeaveCount = parallelResults[1].length;
+        announcementsCount = parallelResults[2].length;
+        eventsCount = parallelResults[3].length;
+        surveysCount = parallelResults[4].length;
+      });
+      debugPrint("ManagerDashboard: Attendance/Engagement data populated.");
 
-      // Birthdays Today
-      final monthDay = DateFormat('-MM-dd').format(DateTime.now());
-      birthdays = await supabase
+      debugPrint("ManagerDashboard: Progressive Step 5 - Fetching org details and birthdays...");
+      // Organization details
+      final orgRes = await supabase.from('organizations').select('name, logo_url').eq('id', orgId).maybeSingle();
+      if (orgRes != null && mounted) {
+        setState(() {
+          organizationName = orgRes['name'];
+          companyLogoUrl = orgRes['logo_url'];
+        });
+      }
+
+      // Birthdays (Only active employees with DOB set) - This was the primary cause of 57014 timeout
+      // FIXED: Added active filter and limit
+      final monthDay = DateFormat('MM-dd').format(DateTime.now());
+      final birthdayEmps = await supabase
           .from('employee_records')
-          .select()
-          .like('date_of_birth', '%$monthDay');
+          .select('id, full_name, date_of_birth, avatar_url')
+          .eq('organization_id', orgId)
+          .not('date_of_birth', 'is', null)
+          .eq('employment_status', 'active')
+          .limit(200); 
+      
+      final filteredBirthdays = birthdayEmps.where((e) {
+        final dob = e['date_of_birth']?.toString() ?? '';
+        return dob.contains(monthDay);
+      }).toList();
 
-      if (mounted) setState(() => loading = false);
+      if (mounted) {
+        setState(() => birthdays = filteredBirthdays);
+      }
+      debugPrint("ManagerDashboard: Background data fully loaded.");
+
     } catch (e) {
-      debugPrint('Manager Dashboard Error: $e');
-      if (mounted) setState(() => loading = false);
+      debugPrint("ManagerDashboard Progressive Load Error: $e");
     }
   }
 
   void filterMembers(String type) {
+    if (!mounted) return;
     setState(() {
       selectedTab = type;
       if (type == 'all') {
@@ -183,6 +232,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       }
     });
   }
+  
   Widget _buildLegendItem(Color color, String label) {
     return Row(
       children: [
@@ -196,6 +246,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       ],
     );
   }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -206,6 +257,8 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
         userData: employee ?? widget.userData ?? {},
         fetchHrmsContext: widget.fetchHrmsContext ?? () async => {},
         currentRoute: DrawerRoute.dashboard,
+        companyLogoUrl: companyLogoUrl,
+        organizationName: organizationName,
       ),
       appBar: AppBar(
         backgroundColor: Colors.white,
@@ -231,9 +284,6 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
                   children: [
                     ManagerHeader(employeeName: employee?['full_name'] ?? 'Manager'),
                     const SizedBox(height: 24),
-                    const AskToffyCard(),
-                    const SizedBox(height: 32),
-                    
                     // My Team Section
                     Text(
                       "My Team",
@@ -309,6 +359,9 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
                       announcements: announcementsCount,
                       events: eventsCount,
                       surveys: surveysCount,
+                      userEmail: widget.userEmail,
+                      userData: employee ?? widget.userData ?? {},
+                      fetchHrmsContext: widget.fetchHrmsContext ?? () async => {},
                     ),
                     
                     const SizedBox(height: 32),

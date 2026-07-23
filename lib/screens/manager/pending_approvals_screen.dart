@@ -458,11 +458,23 @@ class _CategoryListState extends State<_CategoryList> with SingleTickerProviderS
     setState(() => loading = true);
     try {
       String table = _getTableName(widget.tab);
+      String employeeJoin = 'employee_records(full_name, designation, department)';
       
+      // Specify relationship names to disambiguate multiple FKs
+      if (table == 'loans_advances') {
+        employeeJoin = 'employee_records!loans_advances_employee_id_fkey(full_name, designation, department)';
+      } else if (table == 'expense_claims') {
+        employeeJoin = 'employee_records!expense_claims_employee_id_fkey(full_name, designation, department)';
+      } else if (table == 'benefit_claims') {
+        employeeJoin = 'employee_records!benefit_claims_employee_id_fkey(full_name, designation, department)';
+      } else if (table == 'leave_applications') {
+        employeeJoin = 'employee_records!employee_id(full_name, designation, department)';
+      }
+
       // Dynamic fetch based on tab and filter
       var query = supabase
           .from(table)
-          .select('*, employee_records(full_name, designation, department)')
+          .select('*, $employeeJoin')
           .eq('manager_id', widget.managerId);
 
       if (currentFilter == 'pending') {

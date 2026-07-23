@@ -1,5 +1,6 @@
 // lib/screens/leaves_screen.dart
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -9,6 +10,7 @@ import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../widgets/drawer_route.dart';
 import '../widgets/app_drawer.dart';
+import '../widgets/employee_ui.dart';
 
 import '../widgets/bottom_nav_toffy_button.dart';
 import 'dashboard_screen.dart';
@@ -80,7 +82,7 @@ class _LeavesScreenState extends State<LeavesScreen>
       children: [
         // Sub-tab selector (Summary / Calendar)
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Row(
             children: [
               Expanded(
@@ -90,9 +92,10 @@ class _LeavesScreenState extends State<LeavesScreen>
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     decoration: BoxDecoration(
                       color: _leaveMgmtSubTabController.index == 0
-                          ? const Color(0xFF2196F3)
-                          : Colors.grey.shade200,
-                      borderRadius: BorderRadius.circular(12),
+                          ? EmployeeUi.primary
+                          : Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: EmployeeUi.border),
                     ),
                     alignment: Alignment.center,
                     child: Text(
@@ -115,9 +118,10 @@ class _LeavesScreenState extends State<LeavesScreen>
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     decoration: BoxDecoration(
                       color: _leaveMgmtSubTabController.index == 1
-                          ? const Color(0xFF2196F3)
-                          : Colors.grey.shade200,
-                      borderRadius: BorderRadius.circular(12),
+                          ? EmployeeUi.primary
+                          : Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: EmployeeUi.border),
                     ),
                     alignment: Alignment.center,
                     child: Text(
@@ -143,8 +147,14 @@ class _LeavesScreenState extends State<LeavesScreen>
               return IndexedStack(
                 index: _leaveMgmtSubTabController.index,
                 children: [
-                  LeaveSummaryCards(email: widget.email, reloadTrigger: _reloadTrigger),
-                  LeaveCalendarTab(email: widget.email, reloadTrigger: _reloadTrigger),
+                  LeaveSummaryCards(
+                    email: widget.email,
+                    reloadTrigger: _reloadTrigger,
+                  ),
+                  LeaveCalendarTab(
+                    email: widget.email,
+                    reloadTrigger: _reloadTrigger,
+                  ),
                 ],
               );
             },
@@ -158,79 +168,130 @@ class _LeavesScreenState extends State<LeavesScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
-
-      // 🔹 STEP 3.1 — ADD DRAWER
+      backgroundColor: EmployeeUi.pageBg,
       endDrawer: AppDrawer(
         userEmail: widget.email,
-        userData: widget.userData,                 // ✅ FIX
-        fetchHrmsContext: widget.fetchHrmsContext, // ✅ FIX
+        userData: widget.userData,
+        fetchHrmsContext: widget.fetchHrmsContext,
         currentRoute: DrawerRoute.leaves,
-        companyLogoUrl: null,
       ),
-
-      appBar: AppBar(
-        title: const Text('Leaves'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12.0),
-            child: GestureDetector(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => Scaffold(
-                      appBar: AppBar(title: const Text('Apply for Leave')),
-                      body: LeaveApplicationForm(
-                        email: widget.email,
-                        onSubmitted: () {
-                          // when submitted, refresh summary/calendar
-                          setState(() => _reloadTrigger++);
-                        },
-                      ),
-                    ),
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 140,
+            floating: false,
+            pinned: true,
+            automaticallyImplyLeading: false,
+            backgroundColor: Colors.white,
+            elevation: 0,
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 16, top: 12),
+                child: Container(
+                  decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))]),
+                  child: IconButton(
+                    icon: SvgPicture.asset("assets/icons/menu.svg", width: 20, height: 20, colorFilter: const ColorFilter.mode(EmployeeUi.primary, BlendMode.srcIn)),
+                    onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
                   ),
-                );
-              },
-              child: Container(
-                width: 44,
-                height: 44,
-                margin: const EdgeInsets.symmetric(vertical: 8),
-                decoration: const BoxDecoration(
-                  color: Color(0xFF2196F3),
-                  shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.add, color: Colors.white),
+              ),
+              const SizedBox(width: 1),
+            ],
+            flexibleSpace: FlexibleSpaceBar(
+              background: Container(
+                padding: const EdgeInsets.fromLTRB(24, 40, 24, 20),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFFFFECE6), Colors.white],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Text("Leave Management", style: EmployeeUi.header(24)),
+                    const SizedBox(height: 4),
+                    Text("Plan and track your time off", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
+                  ],
+                ),
               ),
             ),
           ),
-          // ☰ MENU (APP DRAWER)
-          IconButton(
-            icon: const Icon(Icons.menu),
-            onPressed: () {
-              _scaffoldKey.currentState?.openEndDrawer();
-            },
+          SliverToBoxAdapter(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => _leaveMgmtSubTabController.animateTo(0),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            decoration: BoxDecoration(
+                              color: _leaveMgmtSubTabController.index == 0 ? EmployeeUi.primary : Colors.white,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: EmployeeUi.border),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text('Summary', style: GoogleFonts.montserrat(color: _leaveMgmtSubTabController.index == 0 ? Colors.white : Colors.black54, fontWeight: FontWeight.w600, fontSize: 13)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => _leaveMgmtSubTabController.animateTo(1),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            decoration: BoxDecoration(
+                              color: _leaveMgmtSubTabController.index == 1 ? EmployeeUi.primary : Colors.white,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: EmployeeUi.border),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text('Calendar', style: GoogleFonts.montserrat(color: _leaveMgmtSubTabController.index == 1 ? Colors.white : Colors.black54, fontWeight: FontWeight.w600, fontSize: 13)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SliverFillRemaining(
+            child: buildRefreshable(
+              skeleton: _buildCorrectSkeleton(),
+              childBuilder: () {
+                return IndexedStack(
+                  index: _leaveMgmtSubTabController.index,
+                  children: [
+                    LeaveSummaryCards(email: widget.email, reloadTrigger: _reloadTrigger),
+                    LeaveCalendarTab(email: widget.email, reloadTrigger: _reloadTrigger),
+                  ],
+                );
+              },
+            ),
           ),
         ],
       ),
-
-      // 🔹 STEP 3.2 — BODY MUST BE STACK
-      body: Stack(
-        children: [
-          // 🔸 MAIN LEAVES CONTENT (UNCHANGED)
-          _buildLeaveMgmtTab(),
-
-          // 🔹 STEP 3.3 — TOFFY CHAT OVERLAY
-
-        ],
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(context, MaterialPageRoute(builder: (_) => Scaffold(appBar: AppBar(title: const Text('Apply for Leave')), body: LeaveApplicationForm(email: widget.email, onSubmitted: () => setState(() => _reloadTrigger++)))));
+        },
+        backgroundColor: EmployeeUi.primary,
+        child: const Icon(Icons.add, color: Colors.white),
       ),
-
-      // 🔹 STEP 3.4 — BOTTOM NAV
       bottomNavigationBar: _buildBottomNav(context),
     );
   }
   // =======================================================
-// STEP 4 — BOTTOM NAVIGATION
-// =======================================================
+  // STEP 4 — BOTTOM NAVIGATION
+  // =======================================================
 
   Widget _buildBottomNav(BuildContext context) {
     return BottomNavigationBar(
@@ -270,7 +331,7 @@ class _LeavesScreenState extends State<LeavesScreen>
             MaterialPageRoute(
               builder: (_) => TimeAttendanceScreen(
                 userEmail: widget.email,
-                userData: widget.userData,                 // ✅ FIX
+                userData: widget.userData, // ✅ FIX
                 fetchHrmsContext: widget.fetchHrmsContext, // ✅ FIX
               ),
             ),
@@ -288,7 +349,6 @@ class _LeavesScreenState extends State<LeavesScreen>
                 userData: widget.userData,
                 fetchHrmsContext: widget.fetchHrmsContext,
               ),
-
             ),
           );
           return;
@@ -300,8 +360,6 @@ class _LeavesScreenState extends State<LeavesScreen>
         }
 
         // 🤖 TOFFY
-
-
       },
 
       items: [
@@ -309,8 +367,7 @@ class _LeavesScreenState extends State<LeavesScreen>
           icon: SvgPicture.asset(
             "assets/icons/dashboard.svg",
             width: 22,
-            color:
-            _bottomTabIndex == 0 ? Colors.blueAccent : Colors.grey,
+            color: _bottomTabIndex == 0 ? Colors.blueAccent : Colors.grey,
           ),
           label: 'Dashboard',
         ),
@@ -318,8 +375,7 @@ class _LeavesScreenState extends State<LeavesScreen>
           icon: SvgPicture.asset(
             "assets/icons/leaves.svg",
             width: 22,
-            color:
-            _bottomTabIndex == 1 ? Colors.blueAccent : Colors.grey,
+            color: _bottomTabIndex == 1 ? Colors.blueAccent : Colors.grey,
           ),
           label: 'Leave',
         ),
@@ -327,8 +383,7 @@ class _LeavesScreenState extends State<LeavesScreen>
           icon: SvgPicture.asset(
             "assets/icons/attendance.svg",
             width: 22,
-            color:
-            _bottomTabIndex == 2 ? Colors.blueAccent : Colors.grey,
+            color: _bottomTabIndex == 2 ? Colors.blueAccent : Colors.grey,
           ),
           label: 'Attendance',
         ),
@@ -336,8 +391,7 @@ class _LeavesScreenState extends State<LeavesScreen>
           icon: SvgPicture.asset(
             "assets/icons/payroll.svg",
             width: 22,
-            color:
-            _bottomTabIndex == 3 ? Colors.blueAccent : Colors.grey,
+            color: _bottomTabIndex == 3 ? Colors.blueAccent : Colors.grey,
           ),
           label: 'Payslip',
         ),
@@ -349,11 +403,9 @@ class _LeavesScreenState extends State<LeavesScreen>
           ),
           label: 'More',
         ),
-
       ],
     );
   }
-
 }
 
 /// ---------------------------
@@ -391,7 +443,9 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
   void didUpdateWidget(covariant LeaveSummaryCards oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.reloadTrigger != widget.reloadTrigger) {
-      setState(() => _futureSummary = _fetchSummary());
+      setState(() {
+        _futureSummary = _fetchSummary();
+      });
     }
   }
 
@@ -413,7 +467,8 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
       final balancesRes = await supabase
           .from('leave_balances')
           .select(
-          'allocated_days, used_days, remaining_days, leave_type_id, leave_types(name, days_allowed)')
+            'allocated_days, used_days, remaining_days, leave_type_id, leave_types(name, days_allowed)',
+          )
           .eq('employee_id', employeeId)
           .eq('year', currentYear);
 
@@ -431,7 +486,9 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
       Map<String, _PolicyBalance> policyMap = {};
 
       // if balances exist, use them
-      if (balancesRes != null && balancesRes is List && balancesRes.isNotEmpty) {
+      if (balancesRes != null &&
+          balancesRes is List &&
+          balancesRes.isNotEmpty) {
         for (final b in balancesRes) {
           final pName = b['leave_types']?['name'] ?? "Unnamed Policy";
           final pDays = b['leave_types']?['days_allowed'] ?? 0;
@@ -494,11 +551,14 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
 
         return RefreshIndicator(
           onRefresh: () async {
-            setState(() => _futureSummary = _fetchSummary());
+            final future = _fetchSummary();
+            setState(() {
+              _futureSummary = future;
+            });
             await _futureSummary;
           },
           child: ListView(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
             children: [
               _summaryCard(
                 icon: Icons.calendar_month,
@@ -550,12 +610,9 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
 
               const SizedBox(height: 25),
 
-              Text(
-                "Leave Balance by Policy",
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.bold),
+              const EmployeeSectionHeader(
+                title: "Leave Balance by Policy",
+                subtitle: "Policy-wise availability for this year",
               ),
               const SizedBox(height: 10),
 
@@ -577,47 +634,41 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
     required String value,
   }) {
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black12.withOpacity(0.06),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          )
-        ],
-      ),
+      padding: const EdgeInsets.all(20),
+      decoration: EmployeeUi.cardDecoration(),
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(12),
+              color: color.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(16),
             ),
-            child: Icon(icon, color: color, size: 26),
+            child: Icon(icon, color: color, size: 24),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 4),
-                Text(subtitle,
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                Text(
+                  title,
+                  style: GoogleFonts.montserrat(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  subtitle,
+                  style: GoogleFonts.montserrat(color: Colors.black45, fontSize: 11),
+                ),
               ],
             ),
           ),
-          Text(value,
-              style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black)),
+          Text(
+            value,
+            style: EmployeeUi.header(24),
+          ),
         ],
       ),
     );
@@ -628,39 +679,39 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black12.withOpacity(0.06),
-              blurRadius: 10,
-              offset: const Offset(0, 4))
-        ],
-      ),
+      decoration: EmployeeUi.cardDecoration(),
       child: Row(
         children: [
           Expanded(
             child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(p.policyName,
-                      style:
-                      const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  const SizedBox(height: 6),
-                  Text("Allocated: ${p.allocated} • Used: ${p.used}",
-                      style: const TextStyle(color: Colors.black54)),
-                ]),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  p.policyName,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  "Allocated: ${p.allocated} • Used: ${p.used}",
+                  style: const TextStyle(color: Colors.black54),
+                ),
+              ],
+            ),
           ),
           Container(
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
             decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(20)),
-            child: Text("${p.remaining} left",
-                style: const TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w600)),
-          )
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              "${p.remaining} left",
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+          ),
         ],
       ),
     );
@@ -708,6 +759,7 @@ class _PolicyBalance {
     required this.remaining,
   });
 }
+
 /// ---------------------------
 /// Leave Calendar Tab
 /// - Tapping a date opens a bottom sheet with styled card (detailed view)
@@ -715,7 +767,11 @@ class _PolicyBalance {
 class LeaveCalendarTab extends StatefulWidget {
   final String email;
   final int reloadTrigger;
-  const LeaveCalendarTab({Key? key, required this.email, required this.reloadTrigger}) : super(key: key);
+  const LeaveCalendarTab({
+    Key? key,
+    required this.email,
+    required this.reloadTrigger,
+  }) : super(key: key);
 
   @override
   State<LeaveCalendarTab> createState() => _LeaveCalendarTabState();
@@ -750,7 +806,11 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
     setState(() => _loadingEvents = true);
 
     try {
-      final emp = await supabase.from('employee_records').select('id').eq('email', widget.email).maybeSingle();
+      final emp = await supabase
+          .from('employee_records')
+          .select('id')
+          .eq('email', widget.email)
+          .maybeSingle();
       if (emp == null) {
         setState(() {
           leaveEvents = {};
@@ -764,8 +824,10 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
       final from = DateTime.now().subtract(const Duration(days: 365));
       final to = DateTime.now().add(const Duration(days: 365));
 
-      final fromStr = "${from.year.toString().padLeft(4, '0')}-${from.month.toString().padLeft(2, '0')}-${from.day.toString().padLeft(2, '0')}";
-      final toStr = "${to.year.toString().padLeft(4, '0')}-${to.month.toString().padLeft(2, '0')}-${to.day.toString().padLeft(2, '0')}";
+      final fromStr =
+          "${from.year.toString().padLeft(4, '0')}-${from.month.toString().padLeft(2, '0')}-${from.day.toString().padLeft(2, '0')}";
+      final toStr =
+          "${to.year.toString().padLeft(4, '0')}-${to.month.toString().padLeft(2, '0')}-${to.day.toString().padLeft(2, '0')}";
 
       final leaves = await supabase
           .from('leave_applications')
@@ -789,7 +851,11 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
           } catch (_) {
             end = start;
           }
-          for (var d = start; !d.isAfter(end); d = d.add(const Duration(days: 1))) {
+          for (
+            var d = start;
+            !d.isAfter(end);
+            d = d.add(const Duration(days: 1))
+          ) {
             final normalized = DateTime(d.year, d.month, d.day);
             events.putIfAbsent(normalized, () => []).add(leave);
           }
@@ -852,66 +918,157 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
                     child: Container(
                       width: 60,
                       height: 6,
-                      decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(6)),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  Text(DateFormat.yMMMMd().format(day), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  Text(
+                    DateFormat.yMMMMd().format(day),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                   const SizedBox(height: 12),
                   if (events.isEmpty)
                     Container(
                       padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12)),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                       child: const Text('No approved leave on this day.'),
                     )
                   else
                     ...events.map((leave) {
-                      final status = (leave['status'] ?? '').toString().toUpperCase();
+                      final status = (leave['status'] ?? '')
+                          .toString()
+                          .toUpperCase();
                       return Container(
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), boxShadow: [BoxShadow(color: Colors.black12.withOpacity(0.04), blurRadius: 8)]),
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Row(children: [
-                            Icon(Icons.check_circle, color: Colors.green.shade700),
-                            const SizedBox(width: 8),
-                            Expanded(child: Text(leave['leave_type'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold))),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: status == 'APPROVED' ? Colors.green.shade50 : (status == 'PENDING' ? Colors.orange.shade50 : Colors.red.shade50),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(status, style: TextStyle(color: status == 'APPROVED' ? Colors.green.shade800 : (status == 'PENDING' ? Colors.orange.shade800 : Colors.red.shade800), fontWeight: FontWeight.w600)),
-                            )
-                          ]),
-                          const SizedBox(height: 10),
-                          Row(children: [
-                            const Icon(Icons.calendar_month, size: 16, color: Colors.grey),
-                            const SizedBox(width: 6),
-                            Text("${leave['from_date']} → ${leave['to_date']} (${leave['total_days']} days)", style: const TextStyle(color: Colors.black87)),
-                          ]),
-                          const SizedBox(height: 8),
-                          if ((leave['reason'] ?? '').toString().isNotEmpty)
-                            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              const Icon(Icons.notes, size: 16, color: Colors.grey),
-                              const SizedBox(width: 6),
-                              Expanded(child: Text("Reason: ${leave['reason'] ?? '--'}", style: const TextStyle(color: Colors.black87))),
-                            ]),
-                          if (leave['manager'] != null) ...[
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black12.withOpacity(0.04),
+                              blurRadius: 8,
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.check_circle,
+                                  color: Colors.green.shade700,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    leave['leave_type'] ?? '',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: status == 'APPROVED'
+                                        ? Colors.green.shade50
+                                        : (status == 'PENDING'
+                                              ? Colors.orange.shade50
+                                              : Colors.red.shade50),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    status,
+                                    style: TextStyle(
+                                      color: status == 'APPROVED'
+                                          ? Colors.green.shade800
+                                          : (status == 'PENDING'
+                                                ? Colors.orange.shade800
+                                                : Colors.red.shade800),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                             const SizedBox(height: 10),
-                            Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(10)),
-                              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                const Text('Manager Details', style: TextStyle(fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 6),
-                                Text("Name: ${leave['manager']['full_name']}"),
-                                Text("Email: ${leave['manager']['email']}"),
-                              ]),
-                            )
-                          ]
-                        ]),
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.calendar_month,
+                                  size: 16,
+                                  color: Colors.grey,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  "${leave['from_date']} → ${leave['to_date']} (${leave['total_days']} days)",
+                                  style: const TextStyle(color: Colors.black87),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            if ((leave['reason'] ?? '').toString().isNotEmpty)
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(
+                                    Icons.notes,
+                                    size: 16,
+                                    color: Colors.grey,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      "Reason: ${leave['reason'] ?? '--'}",
+                                      style: const TextStyle(
+                                        color: Colors.black87,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            if (leave['manager'] != null) ...[
+                              const SizedBox(height: 10),
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue.shade50,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Manager Details',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      "Name: ${leave['manager']['full_name']}",
+                                    ),
+                                    Text("Email: ${leave['manager']['email']}"),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
                       );
                     }).toList(),
                 ],
@@ -949,13 +1106,13 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
                 if (events.isEmpty) return const SizedBox.shrink();
 
                 final hasApproved = events.any(
-                      (e) => (e as Map<String, dynamic>)['status'] == 'approved',
+                  (e) => (e as Map<String, dynamic>)['status'] == 'approved',
                 );
                 final hasPending = events.any(
-                      (e) => (e as Map<String, dynamic>)['status'] == 'pending',
+                  (e) => (e as Map<String, dynamic>)['status'] == 'pending',
                 );
                 final hasRejected = events.any(
-                      (e) => (e as Map<String, dynamic>)['status'] == 'rejected',
+                  (e) => (e as Map<String, dynamic>)['status'] == 'rejected',
                 );
 
                 Color color = Colors.blue;
@@ -1027,7 +1184,6 @@ Widget _legendDot(Color color, String label) {
   );
 }
 
-
 /// ---------------------------
 /// Leave Application Form
 /// - Load leave_types (table) for employee org
@@ -1040,7 +1196,7 @@ class LeaveApplicationForm extends StatefulWidget {
   final VoidCallback? onSubmitted;
 
   const LeaveApplicationForm({Key? key, required this.email, this.onSubmitted})
-      : super(key: key);
+    : super(key: key);
 
   @override
   State<LeaveApplicationForm> createState() => _LeaveApplicationFormState();
@@ -1103,15 +1259,32 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
 
       final orgId = emp['organization_id'];
 
-      final leaveTypes = await supabase
+      debugPrint("LeavesScreen: Fetching leave balances...");
+      final leaveBalances = await supabase
           .from('leave_balances')
-          .select('leave_type_id, remaining_days, leave_types(name)')
+          .select('leave_type_id, remaining_days')
           .eq('employee_id', emp['id'])
           .eq('year', DateTime.now().year);
+      
+      List<Map<String, dynamic>> resolvedPolicies = [];
+      
+      if (leaveBalances != null && leaveBalances.isNotEmpty) {
+        final typeIds = leaveBalances.map((b) => b['leave_type_id'].toString()).toList();
+        final leaveTypes = await supabase.from('leave_types').select('id, name').inFilter('id', typeIds);
+        
+        final typeMap = { for (var t in leaveTypes) t['id'].toString() : t['name'] };
+        
+        resolvedPolicies = leaveBalances.map((b) {
+          final map = Map<String, dynamic>.from(b);
+          map['leave_types'] = { 'name': typeMap[b['leave_type_id'].toString()] ?? 'Unknown' };
+          return map;
+        }).toList();
+      }
 
+      debugPrint("LeavesScreen: Policies resolved: ${resolvedPolicies.length}");
 
       setState(() {
-        policies = leaveTypes != null ? List<Map<String, dynamic>>.from(leaveTypes) : [];
+        policies = resolvedPolicies;
         _managerId = emp['manager_id'];
         _loadingPolicies = false;
       });
@@ -1200,7 +1373,6 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
     }
   }
 
-
   Future<void> _pickFromDate() async {
     final d = await showDatePicker(
       context: context,
@@ -1261,8 +1433,10 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
         if (errorMessage != null)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: Text(errorMessage!,
-                style: const TextStyle(color: Colors.red)),
+            child: Text(
+              errorMessage!,
+              style: const TextStyle(color: Colors.red),
+            ),
           ),
 
         Form(
@@ -1283,9 +1457,9 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
                       style: TextStyle(fontSize: 15, color: Colors.black54),
                     ),
 
-                    items: policies
-                        .where((p) => p['leave_types'] != null)
-                        .map((p) {
+                    items: policies.where((p) => p['leave_types'] != null).map((
+                      p,
+                    ) {
                       return DropdownMenuItem<String>(
                         value: p['leave_types']['name'],
                         child: Text(
@@ -1311,20 +1485,22 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
                             color: Colors.black26,
                             blurRadius: 12,
                             offset: Offset(0, 4),
-                          )
+                          ),
                         ],
                       ),
                       elevation: 8,
                     ),
 
                     menuItemStyleData: const MenuItemStyleData(
-                      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
                       height: 45,
                     ),
                   ),
                 ),
               ),
-
 
               const SizedBox(height: 12),
 
@@ -1390,9 +1566,7 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
                     border: InputBorder.none,
                   ),
                   validator: (v) =>
-                  (v == null || v.trim().isEmpty)
-                      ? 'Enter reason'
-                      : null,
+                      (v == null || v.trim().isEmpty) ? 'Enter reason' : null,
                 ),
               ),
 
@@ -1406,15 +1580,18 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
                 style: ElevatedButton.styleFrom(
                   minimumSize: const Size.fromHeight(48),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
                 child: submitting
                     ? const CircularProgressIndicator(color: Colors.white)
                     : const Text(
-                  'Submit Leave Application',
-                  style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold),
-                ),
+                        'Submit Leave Application',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
               ),
             ],
           ),

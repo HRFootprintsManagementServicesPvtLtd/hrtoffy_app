@@ -7,15 +7,26 @@ import '../screens/dashboard_screen.dart';
 import '../screens/login_screen.dart';
 import '../screens/manager/manager_dashboard_screen.dart';
 import '../screens/manager/pending_approvals_screen.dart';
+import '../screens/manager/manager_benefits_screen.dart';
+import '../screens/manager/manager_loans_screen.dart';
+import '../screens/manager/manager_expenses_screen.dart';
+import '../screens/manager/manager_travel_screen.dart';
+import '../screens/manager/manager_engage_screen.dart';
+import '../screens/manager/manager_compliance_screen.dart';
 import 'drawer_route.dart';
 
 import '../screens/manager/team_attendance_screen.dart';
+
+import 'employee_ui.dart';
+import 'dart:math' as math;
 
 class ManagerDrawer extends StatefulWidget {
   final String userEmail;
   final Map<String, dynamic> userData;
   final DrawerRoute currentRoute;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
+  final String? companyLogoUrl;
+  final String? organizationName;
 
   const ManagerDrawer({
     super.key,
@@ -23,6 +34,8 @@ class ManagerDrawer extends StatefulWidget {
     required this.userData,
     required this.currentRoute,
     required this.fetchHrmsContext,
+    this.companyLogoUrl,
+    this.organizationName,
   });
 
   @override
@@ -32,11 +45,14 @@ class ManagerDrawer extends StatefulWidget {
 class _ManagerDrawerState extends State<ManagerDrawer> {
   int totalApprovals = 0;
   final supabase = Supabase.instance.client;
+  bool showOrgLogo = false;
 
   @override
   void initState() {
     super.initState();
     _fetchTotalApprovals();
+    // Show Org Logo immediately if available
+    showOrgLogo = true;
   }
 
   Future<void> _fetchTotalApprovals() async {
@@ -54,19 +70,38 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
         teamIds = [managerId.toString()];
       }
 
-      final results = await Future.wait([
-        supabase.from('leave_applications').select('id').inFilter('employee_id', teamIds).eq('status', 'pending'),
-        supabase.from('attendance_regularization_requests').select('id').inFilter('employee_id', teamIds).eq('status', 'pending'),
-        supabase.from('benefit_claims').select('id').inFilter('employee_id', teamIds).eq('status', 'pending'),
-        supabase.from('loans_advances').select('id').inFilter('employee_id', teamIds).eq('status', 'pending'),
-        supabase.from('travel_claims').select('id').inFilter('employee_id', teamIds).eq('status', 'pending'),
-        supabase.from('support_requests').select('id').inFilter('employee_id', teamIds).eq('status', 'open'),
-      ]);
-
+      debugPrint("ManagerDrawer: Fetching total approvals for ${teamIds.length} team members...");
+      
       int count = 0;
-      for (var res in results) {
-        count += (res as List).length;
+      
+      // Execute sequentially to avoid overloading and hitting aggregate timeout
+      final tables = [
+        {'name': 'leave_applications', 'statusCol': 'status', 'statusVal': 'pending'},
+        {'name': 'attendance_regularization_requests', 'statusCol': 'status', 'statusVal': 'pending'},
+        {'name': 'benefit_claims', 'statusCol': 'status', 'statusVal': 'pending'},
+        {'name': 'loans_advances', 'statusCol': 'status', 'statusVal': 'pending'},
+        {'name': 'travel_claims', 'statusCol': 'status', 'statusVal': 'pending'},
+        {'name': 'support_requests', 'statusCol': 'status', 'statusVal': 'open'},
+      ];
+
+      for (var table in tables) {
+        try {
+          final res = await supabase
+              .from(table['name']!)
+              .select('id')
+              .inFilter('employee_id', teamIds)
+              .eq(table['statusCol']!, table['statusVal']!)
+              .limit(50); // Cap per table for the badge count speed
+          
+          if (res is List) {
+            count += res.length;
+          }
+        } catch (e) {
+          debugPrint("Error counting ${table['name']}: $e");
+        }
       }
+      
+      debugPrint("ManagerDrawer: Total approvals counted: $count");
 
       if (mounted) {
         setState(() => totalApprovals = count);
@@ -91,21 +126,120 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
       ),
       child: Column(
         children: [
-          // Top Spacer for Status Bar
-          const SizedBox(height: 50),
+          // ================= HEADER =================
+          SafeArea(
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 600),
+                    transitionBuilder: (child, animation) {
+                      final rotate = Tween(
+                        begin: math.pi / 2,
+                        end: 0.0,
+                      ).animate(animation);
+
+                      return AnimatedBuilder(
+                        animation: rotate,
+                        child: child,
+                        builder: (_, child) {
+                          return Transform(
+                            alignment: Alignment.center,
+                            transform: Matrix4.identity()
+                              ..setEntry(3, 2, 0.002)
+                              ..rotateX(rotate.value),
+                            child: child,
+                          );
+                        },
+                      );
+                    },
+                    child: showOrgLogo && widget.companyLogoUrl != null
+                        ? Image.network(
+                            widget.companyLogoUrl!,
+                            key: const ValueKey("org"),
+                            height: 40,
+                          )
+                        : Image.asset(
+                            "assets/HR TOFFY.png",
+                            key: const ValueKey("hr"),
+                            height: 40,
+                          ),
+                  ),
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      if (widget.userData['avatar_url'] != null)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 12),
+                          child: CircleAvatar(
+                            radius: 22,
+                            backgroundImage: NetworkImage(widget.userData['avatar_url']),
+                          ),
+                        )
+                      else
+                        Padding(
+                          padding: const EdgeInsets.only(right: 12),
+                          child: CircleAvatar(
+                            radius: 22,
+                            backgroundColor: Colors.blue.shade100,
+                            child: Text(
+                              (widget.userData['full_name']?.toString() ?? 'M')[0].toUpperCase(),
+                              style: TextStyle(color: Colors.blue.shade800, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.userData['full_name']?.toString() ?? 'Manager',
+                              style: EmployeeUi.title(15),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              widget.userData['designation']?.toString() ??
+                                  widget.userData['department']?.toString() ??
+                                  'Manager workspace',
+                              style: EmployeeUi.body(size: 11, color: EmployeeUi.muted),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (widget.organizationName != null || widget.userData['organization_name'] != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  widget.organizationName ?? widget.userData['organization_name'] ?? '',
+                                  style: EmployeeUi.body(size: 10, color: Colors.blue.shade700, weight: FontWeight.w600),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
           
           Expanded(
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               children: [
-                _drawerItem(
-                  icon: Icons.auto_awesome_outlined,
-                  label: "Ask Toffy",
-                  route: DrawerRoute.askToffy,
-                  onTap: () {
-                    // Navigate to Ask Toffy
-                  },
-                ),
                 _drawerItem(
                   icon: Icons.grid_view_rounded,
                   label: "Dashboard",
@@ -168,7 +302,16 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                   label: "Benefits",
                   route: DrawerRoute.benefits,
                   onTap: () {
-                    // Navigate to Benefits
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ManagerBenefitsScreen(
+                          userEmail: widget.userEmail,
+                          userData: widget.userData,
+                          fetchHrmsContext: widget.fetchHrmsContext,
+                        ),
+                      ),
+                    );
                   },
                 ),
                 _drawerItem(
@@ -176,7 +319,16 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                   label: "Loan & Advances",
                   route: DrawerRoute.loans,
                   onTap: () {
-                    // Navigate to Loans
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ManagerLoansScreen(
+                          userEmail: widget.userEmail,
+                          userData: widget.userData,
+                          fetchHrmsContext: widget.fetchHrmsContext,
+                        ),
+                      ),
+                    );
                   },
                 ),
                 _drawerItem(
@@ -184,7 +336,16 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                   label: "Expenses",
                   route: DrawerRoute.expenses,
                   onTap: () {
-                    // Navigate to Expenses
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ManagerExpensesScreen(
+                          userEmail: widget.userEmail,
+                          userData: widget.userData,
+                          fetchHrmsContext: widget.fetchHrmsContext,
+                        ),
+                      ),
+                    );
                   },
                 ),
                 _drawerItem(
@@ -192,7 +353,16 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                   label: "Travel",
                   route: DrawerRoute.travel,
                   onTap: () {
-                    // Navigate to Travel
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ManagerTravelScreen(
+                          userEmail: widget.userEmail,
+                          userData: widget.userData,
+                          fetchHrmsContext: widget.fetchHrmsContext,
+                        ),
+                      ),
+                    );
                   },
                 ),
                 _drawerItem(
@@ -200,46 +370,16 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                   label: "Engage",
                   route: DrawerRoute.engage,
                   onTap: () {
-                    // Navigate to Engage
-                  },
-                ),
-                _drawerItem(
-                  icon: Icons.verified_user_outlined,
-                  label: "Compliance",
-                  route: DrawerRoute.compliance,
-                  onTap: () {
-                    // Navigate to Compliance
-                  },
-                ),
-                _drawerItem(
-                  icon: Icons.business_center_outlined,
-                  label: "Extended Modules",
-                  route: DrawerRoute.extendedModules,
-                  hasDropdown: true,
-                  onTap: () {
-                    // Handle Dropdown
-                  },
-                ),
-
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 8.0),
-                  child: Divider(height: 1, thickness: 0.5, color: Color(0xFFEEEEEE)),
-                ),
-
-                _drawerItem(
-                  icon: Icons.settings_outlined,
-                  label: "Settings",
-                  route: DrawerRoute.settings,
-                  onTap: () {
-                    // Navigate to Settings
-                  },
-                ),
-                _drawerItem(
-                  icon: Icons.help_outline_rounded,
-                  label: "How-To Guide",
-                  route: DrawerRoute.howToGuide,
-                  onTap: () {
-                    // Navigate to How-To Guide
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ManagerEngageScreen(
+                          userEmail: widget.userEmail,
+                          userData: widget.userData,
+                          fetchHrmsContext: widget.fetchHrmsContext,
+                        ),
+                      ),
+                    );
                   },
                 ),
               ],
