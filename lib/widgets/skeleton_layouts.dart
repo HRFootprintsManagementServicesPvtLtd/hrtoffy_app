@@ -1469,3 +1469,75 @@ class SkeletonMessages extends StatelessWidget {
     );
   }
 }
+Widget dashboardFullSkeleton() {
+  return SingleChildScrollView(
+    physics: const NeverScrollableScrollPhysics(),
+    padding: const EdgeInsets.fromLTRB(20, 40, 20, 30),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+
+        // Header
+        dashboardWelcomeSkeleton(),
+
+        const SizedBox(height: 18),
+
+        // Attendance
+        dashboardAttendanceSkeleton(),
+
+        const SizedBox(height: 20),
+
+        // Meal Voucher
+        const SkeletonBox(
+          width: double.infinity,
+          height: 110,
+          borderRadius: BorderRadius.all(Radius.circular(18)),
+        ),
+
+        const SizedBox(height: 22),
+
+        // Quick Actions title
+        const SkeletonBox(
+          width: 140,
+          height: 18,
+        ),
+
+        const SizedBox(height: 18),
+
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: List.generate(
+            3,
+                (_) => Column(
+              children: const [
+                SkeletonBox(
+                  width: 60,
+                  height: 60,
+                  borderRadius: BorderRadius.all(Radius.circular(16)),
+                ),
+                SizedBox(height: 10),
+                SkeletonBox(width: 55, height: 12),
+              ],
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 28),
+
+        // Leave Balance
+        const SkeletonBox(
+          width: double.infinity,
+          height: 150,
+          borderRadius: BorderRadius.all(Radius.circular(18)),
+        ),
+
+        const SizedBox(height: 22),
+
+        // Manager
+        dashboardManagerSkeleton(),
+
+        const SizedBox(height: 40),
+      ],
+    ),
+  );
+}

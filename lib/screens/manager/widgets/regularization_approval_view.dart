@@ -138,15 +138,24 @@ class _RegularizationApprovalViewState extends State<RegularizationApprovalView>
     try {
       double hoursWorked = 0;
       final reqDate = request['date'];
-      
+
       String? punchInFull;
       String? punchOutFull;
-      
+
       if (request['requested_punch_in'] != null) {
-        punchInFull = "$reqDate ${request['requested_punch_in']}";
+        final value = request['requested_punch_in'].toString();
+
+        punchInFull = value.contains('T')
+            ? value
+            : "$reqDate $value";
       }
+
       if (request['requested_punch_out'] != null) {
-        punchOutFull = "$reqDate ${request['requested_punch_out']}";
+        final value = request['requested_punch_out'].toString();
+
+        punchOutFull = value.contains('T')
+            ? value
+            : "$reqDate $value";
       }
 
       if (isApprove && punchInFull != null && punchOutFull != null) {

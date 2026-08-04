@@ -72,8 +72,22 @@ class _PayslipScreenState extends State<PayslipScreen> {
   pw.Font? _pdfReg;
   pw.Font? _pdfBold;
   Uint8List? _cachedLogoBytes;
+
+  // -------------------------
+  // Perf caches (never reload after first fetch)
+  // -------------------------
+  bool _employeeLoaded = false;
+  bool _organizationLoaded = false;
+  bool _globalsLoaded = false;
+  bool _latestPeriodResolved = false;
+  bool _leavesLoaded = false;
+  List<Map<String, dynamic>> _cachedLeaves = [];
+  final Map<String, List<dynamic>> _holidaysCache = {}; // key: 'YYYY-MM'
+  final Map<String, Map<String, dynamic>?> _taxSelectionCache = {}; // key: FY
+
   @override
   void initState() {
+
     super.initState();
     _initialize();
   }
@@ -90,20 +104,33 @@ class _PayslipScreenState extends State<PayslipScreen> {
     });
 
     try {
+      // 1) Employee is a prerequisite for org/globals/latest-period.
+      // Kick off PDF fonts + logo URL resolve in parallel with employee load.
+      final fontsFuture = Future.wait([
+        rootBundle.load('fonts/Roboto-Regular.ttf'),
+        rootBundle.load('fonts/Roboto-Bold.ttf'),
+      ]);
+
+      print("STEP 1 - loadEmployee");
       await _loadEmployee();
+      print("STEP 1 DONE");
+
+      // 2) Organization + latest released period can run in parallel.
+      print("STEP 2 - loadOrganization");
       await _loadOrganization();
+      print("STEP 2 DONE");
+
+      // 3) Globals depend on organization; period processing is independent
+      // of globals so run them in parallel.
+      print("STEP 3 - fetchGlobals");
       await _fetchGlobals();
-      await _fetchLatestReleasedPeriod();
-      await _processPeriodChange(selectedMonth, selectedYear);
+      print("STEP 3 DONE");
 
-      // load default PDF fonts (built-in Helvetica). These always exist.
-      final regularFontData = await rootBundle.load('fonts/Roboto-Regular.ttf');
-      final boldFontData = await rootBundle.load('fonts/Roboto-Bold.ttf');
+      // 4) Finish font + logo work (font bytes were already downloading).
+      final fontData = await fontsFuture;
+      _pdfReg = pw.Font.ttf(fontData[0]);
+      _pdfBold = pw.Font.ttf(fontData[1]);
 
-      _pdfReg = pw.Font.ttf(regularFontData);
-      _pdfBold = pw.Font.ttf(boldFontData);
-
-      // preload logo bytes
       final logoUrl = await _resolveLogoPublicUrl();
       _cachedLogoBytes = await _getLogoBytes(logoUrl);
     } catch (e, st) {
@@ -113,17 +140,18 @@ class _PayslipScreenState extends State<PayslipScreen> {
         errorMsg = e.toString();
       });
     } finally {
-      setState(() => isLoading = false);
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
+
   Future<void> _loadEmployee() async {
+    if (_employeeLoaded && employee != null) return;
     final user = supabase.auth.currentUser;
 
     if (user == null) {
       throw Exception("User not logged in");
     }
-
     final userData = await supabase
         .from('employee_records')
         .select()
@@ -173,7 +201,9 @@ class _PayslipScreenState extends State<PayslipScreen> {
         (employee?['salary'] ?? employee?['annual_salary'])?.toString() ?? '0';
 
     monthlySalary = (double.tryParse(rawAnnual) ?? 0) / 12;
+    _employeeLoaded = true;
   }
+
 
   Future<void> _loadPayrollCycle(int month, int year) async {
     if (employee == null) return;
@@ -191,6 +221,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
   }
 
   Future<void> _loadOrganization() async {
+    if (_organizationLoaded && organization != null) return;
     if (employee == null) return;
     final orgData = await supabase
         .from('organizations')
@@ -201,37 +232,51 @@ class _PayslipScreenState extends State<PayslipScreen> {
     if (orgData != null) {
       organization = Map<String, dynamic>.from(orgData as Map);
     }
+    _organizationLoaded = true;
   }
 
+
   Future<void> _fetchGlobals() async {
+    if (_globalsLoaded) return;
     if (organization == null) return;
-    final cfg = await supabase
-        .from('salary_configurations')
-        .select()
-        .eq('organization_id', organization!['id'])
-        .eq('enabled', true);
+
+    final results = await Future.wait([
+      supabase
+          .from('salary_configurations')
+          .select()
+          .eq('organization_id', organization!['id'])
+          .eq('enabled', true),
+      supabase
+          .from('professional_tax_slabs')
+          .select()
+          .eq('organization_id', organization!['id']),
+    ]);
+
+    final cfg = results[0];
     salaryConfig = cfg != null
         ? List<Map<String, dynamic>>.from(cfg as List)
         : [];
 
-    final pTax = await supabase
-        .from('professional_tax_slabs')
-        .select()
-        .eq('organization_id', organization!['id']);
+    final pTax = results[1];
     professionalTaxSlabs = pTax != null
         ? List<Map<String, dynamic>>.from(pTax as List)
         : [];
     professionalTaxSlabs.sort(
-      (a, b) => ((a['min_amount'] ?? 0) as num).compareTo(
+          (a, b) => ((a['min_amount'] ?? 0) as num).compareTo(
         (b['min_amount'] ?? 0) as num,
       ),
     );
+    _globalsLoaded = true;
   }
 
+
   Future<void> _fetchLatestReleasedPeriod() async {
+    if (_latestPeriodResolved) return;
     if (employee == null) return;
+    _latestPeriodResolved = true;
 
     final latest = await supabase
+
         .from('payroll_cycles')
         .select()
         .eq('organization_id', employee!['organization_id'])
@@ -250,6 +295,10 @@ class _PayslipScreenState extends State<PayslipScreen> {
   Future<void> _loadTaxSelectionForFY(int month, int year) async {
     if (employee == null) return;
     final fy = _inferFinancialYear(year, month);
+    if (_taxSelectionCache.containsKey(fy)) {
+      taxSelection = _taxSelectionCache[fy];
+      return;
+    }
     final res = await supabase
         .from('tax_regime_selections')
         .select()
@@ -257,8 +306,11 @@ class _PayslipScreenState extends State<PayslipScreen> {
         .eq('financial_year', fy)
         .limit(1)
         .maybeSingle();
-    if (res != null) taxSelection = Map<String, dynamic>.from(res as Map);
+    final mapped = res != null ? Map<String, dynamic>.from(res as Map) : null;
+    _taxSelectionCache[fy] = mapped;
+    if (mapped != null) taxSelection = mapped;
   }
+
 
   // -------------------------
   // Period change handling
@@ -284,8 +336,12 @@ class _PayslipScreenState extends State<PayslipScreen> {
       });
       return;
     }
-    final access = await _checkEmployeePayslipAccess(month, year);
-    await _loadPayrollCycle(month, year);
+    // Run access check + payroll cycle load in parallel (both are independent).
+    final results = await Future.wait([
+      _checkEmployeePayslipAccess(month, year),
+      _loadPayrollCycle(month, year),
+    ]);
+    final access = results[0] as bool;
     setState(() => isAccessGranted = access);
     if (!access) {
       setState(() {
@@ -295,8 +351,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
       return;
     }
 
-    await _loadPayrollCycle(month, year);
-
     if (payrollCycleId == null) {
       setState(() {
         infoMsg = 'Payroll cycle not found for this period.';
@@ -304,6 +358,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
       });
       return;
     }
+
 
     final stored = await _fetchStoredPayslip(month, year);
 
@@ -352,21 +407,21 @@ class _PayslipScreenState extends State<PayslipScreen> {
     }
 
     final payslipData = Map<String, dynamic>.from(decryptedBody['data'] ?? {});
-    final attendance = await _computeAttendance(month, year);
 
-    /// decrypt line items
+    /// decrypt line items — run attendance compute IN PARALLEL with batch decrypt
     final lineItems = stored['payslip_line_items'] ?? [];
 
+    Future<dynamic> lineItemsFuture;
     if (lineItems.isNotEmpty) {
       final ids = lineItems.map((e) => e['id']).toList();
 
-      final session = supabase.auth.currentSession;
-
-      if (session == null || session.accessToken == null) {
+      final session2 = supabase.auth.currentSession;
+      if (session2 == null || session2.accessToken == null) {
         throw Exception("Session expired. Please login again.");
       }
 
-      final batch = await supabase.functions.invoke(
+      lineItemsFuture = supabase.functions
+          .invoke(
         'salary-encryption',
         body: {
           'action': 'decrypt-batch',
@@ -374,33 +429,38 @@ class _PayslipScreenState extends State<PayslipScreen> {
           'record_ids': ids,
           'organization_id': employee!['organization_id'],
         },
-        headers: {'Authorization': 'Bearer ${session.accessToken}'},
-      );
+        headers: {'Authorization': 'Bearer ${session2.accessToken}'},
+      )
+          .then((batch) => {'batch': batch, 'ids': ids});
+    } else {
+      lineItemsFuture = Future.value(null);
+    }
 
+    final parallel = await Future.wait([
+      _computeAttendance(month, year),
+      lineItemsFuture,
+    ]);
+
+    final attendance = parallel[0] as Map<String, int>;
+    final lineItemsResult = parallel[1];
+
+    if (lineItemsResult != null) {
+      final batch = (lineItemsResult as Map)['batch'];
+      final ids = (lineItemsResult)['ids'] as List;
       final batchBodyRaw = batch.data is String
           ? jsonDecode(batch.data)
           : batch.data;
-
       final batchBody = Map<String, dynamic>.from(batchBodyRaw ?? {});
 
       if (batchBody['success'] == true) {
-        final body = batch.data is String ? jsonDecode(batch.data) : batch.data;
-
-        final batchBody = Map<String, dynamic>.from(body ?? {});
-
         final decryptedItemsMap = Map<String, dynamic>.from(
           batchBody['data'] ?? {},
         );
-
         final decryptedItems = ids
             .map((id) => decryptedItemsMap[id.toString()])
             .whereType<Map<String, dynamic>>()
             .toList();
-
         payslipData['payslip_line_items'] = decryptedItems;
-        print(
-          "LINE ITEMS => ${payslipData['payslip_line_items']}",
-        ); // ✅ ADD HERE
       }
     }
 
@@ -644,30 +704,53 @@ class _PayslipScreenState extends State<PayslipScreen> {
     }
 
     /// 3️⃣ Holidays
-    final holidays = await supabase
+    /// 3️⃣ + 4️⃣ Holidays and Leaves — fetched in parallel, both cached.
+    final holidayKey =
+        '$year-${month.toString().padLeft(2, '0')}';
+    final needHolidays = !_holidaysCache.containsKey(holidayKey);
+    final needLeaves = !_leavesLoaded;
+
+    final futures = <Future<dynamic>>[];
+    futures.add(needHolidays
+        ? supabase
         .from('holidays')
         .select('date')
         .eq('organization_id', employee!['organization_id'])
         .gte('date', '$year-${month.toString().padLeft(2, '0')}-01')
         .lte(
-          'date',
-          '$year-${month.toString().padLeft(2, '0')}-${totalDays.toString().padLeft(2, '0')}',
-        );
+      'date',
+      '$year-${month.toString().padLeft(2, '0')}-${totalDays.toString().padLeft(2, '0')}',
+    )
+        : Future.value(_holidaysCache[holidayKey]));
+    futures.add(needLeaves
+        ? supabase
+        .from('leave_applications')
+        .select(
+      'from_date,to_date,leave_type,status,leave_duration_type,half_day_session',
+    )
+        .eq('employee_id', employee!['id'])
+        .inFilter('status', ['approved', 'manager_approved'])
+        : Future.value(_cachedLeaves));
 
+    final results = await Future.wait(futures);
+    final holidays = results[0];
+    if (needHolidays) {
+      _holidaysCache[holidayKey] =
+      holidays != null ? List<dynamic>.from(holidays as List) : <dynamic>[];
+    }
     final int holidayCount = holidays?.length ?? 0;
 
     /// 4️⃣ Leaves (Paid vs LOP)
     double paidLeaveDays = 0;
     double lopDays = 0;
 
-    final leaves = await supabase
-        .from('leave_applications')
-        .select(
-          'from_date,to_date,leave_type,status,leave_duration_type,half_day_session',
-        )
-        .eq('employee_id', employee!['id'])
-        .inFilter('status', ['approved', 'manager_approved']);
-
+    final leaves = results[1];
+    if (needLeaves) {
+      _cachedLeaves = leaves != null
+          ? List<Map<String, dynamic>>.from(leaves as List)
+          : <Map<String, dynamic>>[];
+      _leavesLoaded = true;
+    }
     for (final leave in leaves ?? []) {
       final leaveName = (leave['leave_type'] ?? '').toString().toLowerCase();
 

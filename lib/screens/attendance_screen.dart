@@ -275,21 +275,46 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
   }
 
   Future<void> _loadAttendance() async {
+    debugPrint("LOAD ATTENDANCE START");
     setState(() => loading = true);
     try {
       final empId = widget.employee['id'];
       final att = await AttendanceService.getTodayAttendance(employeeId: empId);
       final logs = await AttendanceService.getTodayPunchLogs(employeeId: empId);
-      
+      debugPrint("=========== ATTENDANCE FETCH ===========");
+      debugPrint(att.toString());
+      debugPrint(logs.toString());
+      debugPrint("=======================================");
+
+      bool punchedIn = false;
+
+      debugPrint("ATT = $att");
+
+      if (att != null) {
+        debugPrint("punch_in_time = ${att['punch_in_time']}");
+        debugPrint("punch_out_time = ${att['punch_out_time']}");
+
+        final hasIn = att['punch_in_time'] != null;
+        final hasOut = att['punch_out_time'] != null;
+
+        debugPrint("hasIn = $hasIn");
+        debugPrint("hasOut = $hasOut");
+
+        punchedIn = hasIn && !hasOut;
+
+        debugPrint("FINAL punchedIn = $punchedIn");
+      }
+
       setState(() {
         todayAttendance = att;
         punchLogs = logs;
-        hasPunchedIn = att != null && att['punch_in_time'] != null && att['punch_out_time'] == null;
+        debugPrint("punchedIn calculated = $punchedIn");
+        hasPunchedIn = punchedIn;
+        debugPrint("AFTER SET hasPunchedIn = $hasPunchedIn");
       });
     } catch (e) { debugPrint('loadAttendance error: $e'); }
     finally { setState(() => loading = false); }
   }
-
   Future<Map<String, dynamic>?> _checkGeoFence() async {
     try {
       setState(() => geoChecking = true);
@@ -310,7 +335,6 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
       setState(() => geoChecking = false);
     }
   }
-
   Future<bool> _showGeoConfirmDialog(String site, double distance, double allowed) async {
     return await showDialog<bool>(
       context: context,
@@ -325,12 +349,10 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
       ),
     ) ?? false;
   }
-
   Future<void> _punch(String type) async {
     final punchMethod = type == 'punch_in' 
         ? AttendanceService.punchIn 
         : AttendanceService.punchOut;
-
     await punchMethod(
       employee: widget.employee,
       selectedWorkType: selectedWorkType,
@@ -339,15 +361,20 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
       geoTrackOnly: geoTrackOnly,
       workSites: workSites,
       onShowGeoConfirm: _showGeoConfirmDialog,
+
       onSuccess: () async {
+        await Future.delayed(const Duration(seconds: 2));
         await _loadAttendance();
-        _showSuccess(type == 'punch_in' ? 'Punch In successful' : 'Punch Out successful');
+        _showSuccess(
+          type == 'punch_in'
+              ? 'Punch In successful'
+              : 'Punch Out successful',
+        );
       },
       onError: _showError,
       onLoading: (val) => setState(() => loading = val),
     );
   }
-
   @override
   Widget build(BuildContext context) {
     final att = todayAttendance;
@@ -379,11 +406,66 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
           ),
           const SizedBox(height: 16),
           if (isBiometricOnly) _biometricOnlyCard(),
-          if (isInSystemAllowed) SizedBox(width: double.infinity, child: ElevatedButton(
-            onPressed: loading || geoChecking || (geoEnabled && geoMode == 'strict' && geoTrackOnly == false && geoInFence == false) ? null : () => _punch(hasPunchedIn ? 'punch_out' : 'punch_in'),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(52), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))),
-            child: loading || geoChecking ? Row(mainAxisAlignment: MainAxisAlignment.center, children: [const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)), const SizedBox(width: 12), Text(geoChecking ? "Checking location..." : "Please wait...", style: GoogleFonts.montserrat(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white))]) : Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(hasPunchedIn ? Icons.logout : Icons.login, color: Colors.white, size: 22), const SizedBox(width: 10), Text(hasPunchedIn ? "Punch Out Now" : "Punch In Now", style: GoogleFonts.montserrat(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white))]),
-          )),
+          if (isInSystemAllowed) ...[
+
+
+            const SizedBox(height: 10),
+
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: loading ||
+                    geoChecking ||
+                    (geoEnabled &&
+                        geoMode == 'strict' &&
+                        geoTrackOnly == false &&
+                        geoInFence == false)
+                    ? null
+                    : () => _punch(hasPunchedIn ? 'punch_out' : 'punch_in'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size.fromHeight(52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                ),
+                child: loading || geoChecking
+                    ? Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      geoChecking ? "Checking location..." : "Please wait...",
+                    ),
+                  ],
+                )
+                    : Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      hasPunchedIn ? Icons.logout : Icons.login,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      hasPunchedIn
+                          ? "Punch Out Now"
+                          : "Punch In Now",
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 22),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Today\'s Logs', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)), IconButton(icon: const Icon(Icons.map, color: Colors.blue), onPressed: () { if (punchLogs.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No punch records found'))); return; } Navigator.push(context, MaterialPageRoute(builder: (_) => LiveTrackingMapScreen(logs: punchLogs))); })]),
           const SizedBox(height: 8),

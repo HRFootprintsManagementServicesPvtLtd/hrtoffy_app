@@ -8,6 +8,7 @@ import 'manager/manager_dashboard_screen.dart';
 import 'otp_password_reset_dialog.dart';
 import 'forgot_password_dialog.dart';
 import '../widgets/employee_ui.dart';
+import 'package:uuid/uuid.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({Key? key}) : super(key: key);
@@ -18,6 +19,12 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _mobileController = TextEditingController();
+  final _otpController = TextEditingController();
+
+  bool _showMobileLogin = false;
+  bool _showOtpField = false;
+  bool _isOtpLoading = false;
   bool _isLoading = false, _obscurePassword = true;
   String? _error;
 
@@ -38,6 +45,143 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } on AuthException catch (e) { setState(() => _error = e.message); }
     finally { setState(() => _isLoading = false); }
+  }
+
+  Future<void> _showForgotPassword() async {
+    final email = await showDialog<String>(
+      context: context,
+      builder: (_) => const ForgotPasswordDialog(),
+    );
+
+    if (email != null && mounted) {
+      showDialog(
+        context: context,
+        builder: (_) => OTPPasswordResetDialog(email: email),
+      );
+    }
+  }
+  Future<void> _sendOtp() async {
+    setState(() {
+      _isOtpLoading = true;
+      _error = null;
+    });
+    try {
+      final response = await Supabase.instance.client.functions.invoke(
+        'send-phone-otp',
+        body: {
+          'phone': _mobileController.text.trim(),
+          'purpose': 'login',
+          'idempotency_key': const Uuid().v4(),
+        },
+      );
+      final data = response.data;
+      if (response.status != 200 || data['success'] != true) {
+        setState(() {
+          _error = data['error'] ?? 'Failed to send OTP';
+        });
+        return;
+      }
+      setState(() {
+        _showOtpField = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("OTP sent successfully")),
+      );
+    } catch (e) {
+      String message = "Something went wrong";
+      if (e is FunctionException) {
+        final details = e.details;
+        if (details is Map && details['error'] != null) {
+          message = details['error'].toString();
+        } else {
+          message = e.reasonPhrase ?? message;
+        }
+      } else {
+        message = e.toString();
+      }
+      setState(() {
+        _error = message;
+      });
+    } finally {
+      setState(() {
+        _isOtpLoading = false;
+      });
+    }
+  }
+  Future<void> _verifyOtp() async {
+    setState(() {
+      _isOtpLoading = true;
+      _error = null;
+    });
+    try {
+      final response = await Supabase.instance.client.functions.invoke(
+        'verify-phone-otp',
+        body: {
+          'phone': _mobileController.text.trim(),
+          'otp': _otpController.text.trim(),
+          'purpose': 'login',
+        },
+      );
+      final data = response.data;
+      if (response.status != 200 || data['success'] != true) {
+        setState(() {
+          _error = data['error'] ?? 'OTP verification failed';
+        });
+        return;
+      }
+      final authResponse = await Supabase.instance.client.auth.setSession(
+        data['refresh_token'],
+      );
+      if (authResponse.session == null) {
+        throw Exception("Failed to create session");
+      }
+      await Geolocator.requestPermission();
+      await FirebaseNotificationService.setupFCM(
+        userEmail: data['employee']['email'],
+      );
+      if (!mounted) return;
+      if (data['employee']['emp_role'] == "manager") {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ManagerDashboardScreen(
+              userEmail: data['employee']['email'],
+            ),
+          ),
+        );
+      } else {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => DashboardScreen(
+              email: data['employee']['email'],
+              employeeId: data['employee']['id'],
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      String message = "Something went wrong";
+      if (e is FunctionException) {
+        final details = e.details;
+
+        if (details is Map && details['error'] != null) {
+          message = details['error'].toString();
+        } else {
+          message = e.reasonPhrase ?? message;
+        }
+      } else {
+        message = e.toString();
+      }
+
+      setState(() {
+        _error = message;
+      });
+    } finally {
+      setState(() {
+        _isOtpLoading = false;
+      });
+    }
   }
 
   @override
@@ -68,7 +212,78 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 32),
                       _isLoading ? const CircularProgressIndicator() : ElevatedButton(onPressed: _login, style: ElevatedButton.styleFrom(backgroundColor: EmployeeUi.primary, foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 54), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), child: const Text("Sign In", style: TextStyle(fontWeight: FontWeight.bold))),
                       if (_error != null) Padding(padding: const EdgeInsets.only(top: 16), child: Text(_error!, style: const TextStyle(color: Colors.red))),
-                      TextButton(onPressed: () {}, child: const Text("Forgot Password?", style: TextStyle(color: Colors.grey))),
+                      TextButton(onPressed: _showForgotPassword, child: const Text("Forgot Password?", style: TextStyle(color: Colors.grey))),
+                      const SizedBox(height: 10),
+
+                      TextButton.icon(
+                        onPressed: () {
+                          setState(() {
+                            _showMobileLogin = !_showMobileLogin;
+                            _showOtpField = false;
+                            _error = null;
+                          });
+                        },
+                        icon: const Icon(Icons.phone_android, color: Colors.green),
+                        label: Text(
+                          _showMobileLogin
+                              ? "Back to Email Login"
+                              : "Login with Mobile Number",
+                          style: const TextStyle(
+                            color: Colors.green,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+
+                      if (_showMobileLogin) ...[
+                        const SizedBox(height: 20),
+
+                        TextField(
+                          controller: _mobileController,
+                          keyboardType: TextInputType.phone,
+                          decoration: const InputDecoration(
+                            labelText: "Mobile Number",
+                            hintText: "9876543210",
+                            prefixIcon: Icon(Icons.phone),
+                          ),
+                        ),
+
+                        const SizedBox(height: 15),
+
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _isOtpLoading ? null : _sendOtp,
+                            child: _isOtpLoading
+                                ? const CircularProgressIndicator()
+                                : const Text("Send OTP"),
+                          ),
+                        ),
+
+                        if (_showOtpField) ...[
+                          const SizedBox(height: 20),
+
+                          TextField(
+                            controller: _otpController,
+                            keyboardType: TextInputType.number,
+                            maxLength: 6,
+                            decoration: const InputDecoration(
+                              labelText: "Enter OTP",
+                              prefixIcon: Icon(Icons.lock_clock),
+                            ),
+                          ),
+
+                          const SizedBox(height: 10),
+
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: _verifyOtp,
+                              child: const Text("Verify OTP"),
+                            ),
+                          ),
+                        ]
+                      ],
                     ],
                   ),
                 ),
@@ -80,3 +295,4 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 }
+

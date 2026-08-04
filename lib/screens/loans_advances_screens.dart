@@ -60,15 +60,23 @@ class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTi
     try {
       if (!mounted) return;
       setState(() => loadingEligibility = true);
+      // NEW
       final empId = widget.userData['id'] ?? widget.userData['employee_id'];
-      final grade = widget.userData['grade_code'] ?? widget.userData['grade_name'];
+      final grade = widget.userData['grade_code'] ?? widget.userData['grade'] ?? widget.userData['grade_name'];
+      final orgId = widget.userData['organization_id'];
 
-      if (grade != null) {
-        final gradeRes = await supabase.from('grade_levels').select('loan_max_amount').eq('grade_name', grade).maybeSingle();
+      if (grade != null && orgId != null) {
+        final gradeRes = await supabase
+            .from('grade_structure')
+            .select('loan_max_amount')
+            .eq('organization_id', orgId)
+            .eq('grade_code', grade)
+            .maybeSingle();
         if (gradeRes != null) {
           maxEligibleAmount = (gradeRes['loan_max_amount'] ?? 0).toDouble();
         }
       }
+
 
       final activeLoans = await supabase.from('loans_advances').select('requested_amount, status').eq('employee_id', empId).inFilter('status', ['active', 'approved', 'pending']);
       
@@ -203,26 +211,42 @@ class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTi
           SliverToBoxAdapter(
             child: Column(
               children: [
-                _buildEligibilityCard(),
                 Container(
                   margin: const EdgeInsets.fromLTRB(20, 16, 20, 10),
                   padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: EmployeeUi.border)),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: EmployeeUi.border),
+                  ),
                   child: TabBar(
                     controller: _tabController,
-                    indicator: BoxDecoration(color: EmployeeUi.primary, borderRadius: BorderRadius.circular(10)),
+                    indicator: BoxDecoration(
+                      color: EmployeeUi.primary,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                     indicatorSize: TabBarIndicatorSize.tab,
                     labelColor: Colors.white,
                     unselectedLabelColor: Colors.black87,
-                    labelStyle: GoogleFonts.montserrat(fontWeight: FontWeight.w600, fontSize: 13),
-                    unselectedLabelStyle: GoogleFonts.montserrat(fontWeight: FontWeight.w500, fontSize: 13),
+                    labelStyle: GoogleFonts.montserrat(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                    unselectedLabelStyle: GoogleFonts.montserrat(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 13,
+                    ),
                     dividerColor: Colors.transparent,
-                    tabs: const [Tab(text: 'My Loans'), Tab(text: 'EMI Schedule')],
+                    tabs: const [
+                      Tab(text: 'My Loans'),
+                      Tab(text: 'EMI Schedule'),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
+
           SliverFillRemaining(
             child: TabBarView(
               controller: _tabController,
@@ -273,10 +297,21 @@ class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTi
   }
 }
 
+// NEW
 class MyLoansTab extends StatelessWidget {
   final String userEmail;
   final SupabaseClient supabase = Supabase.instance.client;
   MyLoansTab({Key? key, required this.userEmail}) : super(key: key);
+
+  static const List<Color> _pastelPalette = [
+    Color(0xFFD7E8FF), // Soft Blue
+    Color(0xFFFFECE6), // Soft Peach
+    Color(0xFFDFF6E5), // Soft Mint
+    Color(0xFFFCE4EC), // Soft Pink
+    Color(0xFFEBDFF6), // Soft Lavender
+    Color(0xFFFFF7D6), // Soft Yellow
+  ];
+
 
   Future<List<Map<String, dynamic>>> fetchLoans() async {
     final email = userEmail;
@@ -312,10 +347,16 @@ class MyLoansTab extends StatelessWidget {
             else if (status == 'pending') statusColor = Colors.orange;
             else if (status == 'rejected') statusColor = Colors.red;
 
+            // NEW
+            final pastel = _pastelPalette[i % _pastelPalette.length];
+            final baseDeco = EmployeeUi.cardDecoration();
             return Container(
               margin: const EdgeInsets.only(bottom: 16),
               padding: const EdgeInsets.all(20),
-              decoration: EmployeeUi.cardDecoration(),
+              decoration: (baseDeco is BoxDecoration)
+                  ? baseDeco.copyWith(color: pastel)
+                  : BoxDecoration(color: pastel, borderRadius: BorderRadius.circular(12)),
+
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -430,33 +471,84 @@ class _ApplyLoanPageState extends State<ApplyLoanPage> {
       final orgId = widget.userData['organization_id'];
       final managerId = widget.userData['manager_id'];
 
+      // NEW — match website path: {auth.uid}/{employee_id}/{timestamp}_{filename}
       String? fileUrl;
       if (attachment != null) {
-        final path = 'loans/$empId/${DateTime.now().millisecondsSinceEpoch}_${attachment!.name}';
-        await supabase.storage.from('claim-documents').upload(path, File(attachment!.path!));
-        fileUrl = supabase.storage.from('claim-documents').getPublicUrl(path);
+        final ext = (attachment!.extension ?? attachment!.name.split('.').last).toLowerCase();
+        const mimeMap = <String, String>{
+          'jpg':  'image/jpeg',
+          'jpeg': 'image/jpeg',
+          'png':  'image/png',
+          'pdf':  'application/pdf',
+          'webp': 'image/webp',
+          'heic': 'image/heic',
+          'doc':  'application/msword',
+          'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        };
+        final contentType = mimeMap[ext] ?? 'application/octet-stream';
+
+        final authUid = supabase.auth.currentUser!.id;
+        final path = '$authUid/$empId/loans/${DateTime.now().millisecondsSinceEpoch}_${attachment!.name}';
+
+// keep your existing mimeMap/contentType logic
+        await supabase.storage.from('claim-documents').upload(
+          path,
+          File(attachment!.path!),
+          fileOptions: FileOptions(
+            contentType: contentType, // from your existing mimeMap
+            upsert: false,
+          ),
+        );
+
+// bucket is private — store the path (or a signed URL), not getPublicUrl
+        fileUrl = path;
+
       }
 
-      final res = await supabase.from('loans_advances').insert({
-        "loan_number": "LOAN-${DateTime.now().millisecondsSinceEpoch}",
+
+
+      // STEP 2 — Insert loan (payload matches website LoanApplicationForm.tsx exactly).
+      // Do NOT chain .select().single(): re-reading the row forces the full
+      // permissive SELECT-policy cascade on loans_advances (is_manager_of_employee,
+      // is_in_reviewer_hierarchy, _has_scoped_custom_role JSONB LATERAL scans, etc.)
+      // which causes PostgREST statement_timeout (57014).
+      // Also: loan_number is filled by BEFORE INSERT trigger set_loan_number.
+      // Also: 'initialize_workflow' is NOT a Postgres RPC — the website initializes
+      // the workflow via client-side utils/workflowEngine.ts, which isn't wired
+      // into Flutter yet. Leaving status='pending' is safe; HR/Manager approval
+      // via the web app initializes the workflow record on first action.
+      debugPrint('[submitLoan] STEP 2 insert loans_advances emp=$empId org=$orgId');
+      await supabase.from('loans_advances').insert({
         "employee_id": empId,
         "organization_id": orgId,
-        "manager_id": managerId,
+        "loan_type_id": null,
         "loan_category": _loanCategory,
         "requested_amount": double.parse(_amountController.text),
         "tenure_months": tenure,
         "emi_start_date": emiStartDate!.toIso8601String(),
         "purpose": _purposeController.text,
-        "supporting_documents": fileUrl != null ? [{'name': attachment!.name, 'url': fileUrl}] : [],
         "status": "pending",
-        "application_date": DateTime.now().toIso8601String(),
-      }).select().single();
-
-      await supabase.rpc('initialize_workflow', params: {
-        'p_module': 'loans',
-        'p_target_id': res['id'],
-        'p_org_id': orgId,
+        "manager_id": managerId,
+        "interest_rate": 0,
+        "supporting_documents": fileUrl != null
+            ? [{'name': attachment!.name, 'url': fileUrl}]
+            : [],
       });
+      debugPrint('[submitLoan] STEP 2 insert OK');
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Loan request submitted successfully."),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 2),
+        ),
+      );
+
+      await Future.delayed(const Duration(seconds: 2));
+
+      if (!mounted) return;
 
       Navigator.pop(context, true);
     } catch (e) {

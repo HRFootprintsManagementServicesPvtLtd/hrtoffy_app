@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 import '../models/chat_conversation.dart';
 import '../services/chat_service.dart';
 import 'chat_thread_screen.dart';
@@ -74,66 +75,75 @@ class _MessagesScreenState extends State<MessagesScreen> {
         currentRoute: DrawerRoute.messages,
         companyLogoUrl: null,
       ),
-      body: CustomScrollView(
-        slivers: [
-          SliverAppBar(
-            expandedHeight: 140,
-            floating: false,
-            pinned: true,
-            automaticallyImplyLeading: false,
-            backgroundColor: Colors.white,
-            elevation: 0,
-            actions: [
-              Padding(
-                padding: const EdgeInsets.only(right: 8, top: 12),
-                child: _circleIconBtn(
-                  icon: "assets/icons/notification.svg",
-                  onTap: () {
-                    final empId = (widget.userData['id'] ?? widget.userData['employee_id'])?.toString() ?? '';
-                    if (empId.isNotEmpty) {
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => NotificationsScreen(employeeId: empId, userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext)));
-                    }
-                  },
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(right: 16, top: 12),
-                child: _circleIconBtn(icon: "assets/icons/menu.svg", onTap: () => _scaffoldKey.currentState?.openEndDrawer()),
-              ),
-              const SizedBox(width: 1),
-            ],
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                padding: const EdgeInsets.fromLTRB(24, 40, 24, 20),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Color(0xFFD7E8FF), Colors.white],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
+      body: RefreshIndicator(
+        onRefresh: loadChats,
+        color: EmployeeUi.primary,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverAppBar(
+              expandedHeight: 140,
+              floating: false,
+              pinned: true,
+              automaticallyImplyLeading: false,
+              backgroundColor: Colors.white,
+              elevation: 0,
+              actions: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 8, top: 12),
+                  child: _circleIconBtn(
+                    icon: "assets/icons/notification.svg",
+                    onTap: () {
+                      final empId = (widget.userData['id'] ?? widget.userData['employee_id'])?.toString() ?? '';
+                      if (empId.isNotEmpty) {
+                        Navigator.push(context, MaterialPageRoute(builder: (_) => NotificationsScreen(employeeId: empId, userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext)));
+                      }
+                    },
                   ),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text("Messages", style: EmployeeUi.header(24)),
-                    const SizedBox(height: 4),
-                    Text("Connect with your colleagues", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
-                  ],
+                Padding(
+                  padding: const EdgeInsets.only(right: 16, top: 12),
+                  child: _circleIconBtn(icon: "assets/icons/menu.svg", onTap: () => _scaffoldKey.currentState?.openEndDrawer()),
+                ),
+                const SizedBox(width: 1),
+              ],
+              flexibleSpace: FlexibleSpaceBar(
+                background: Container(
+                  padding: const EdgeInsets.fromLTRB(24, 40, 24, 20),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Color(0xFFD7E8FF), Colors.white],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text("Messages", style: EmployeeUi.header(24)),
+                      const SizedBox(height: 4),
+                      Text("Connect with your colleagues", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-          SliverToBoxAdapter(
-            child: loading ? const SkeletonMessages() : Padding(
-              padding: const EdgeInsets.all(20),
-              child: conversations.isEmpty
-                  ? Center(child: Text("No conversations yet.", style: GoogleFonts.montserrat(color: Colors.grey)))
-                  : Column(children: conversations.map((c) => _buildConversationCard(c)).toList()),
+            SliverToBoxAdapter(
+              child: loading ? const SkeletonMessages() : Padding(
+                padding: const EdgeInsets.all(20),
+                child: conversations.isEmpty
+                    ? Container(
+                        height: 300,
+                        alignment: Alignment.center,
+                        child: Text("No conversations yet.", style: GoogleFonts.montserrat(color: Colors.grey)),
+                      )
+                    : Column(children: conversations.map((c) => _buildConversationCard(c)).toList()),
+              ),
             ),
-          ),
-          const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
-        ],
+            const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {
@@ -178,15 +188,38 @@ class _MessagesScreenState extends State<MessagesScreen> {
   }
 
   Widget _buildConversationCard(ChatConversation c) {
+    final timeStr = c.latestTime != null 
+        ? DateFormat('hh:mm a').format(c.latestTime!.toLocal())
+        : '';
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: EmployeeUi.cardDecoration(),
       child: ListTile(
-        contentPadding: const EdgeInsets.all(16),
-        leading: CircleAvatar(radius: 24, backgroundColor: const Color(0xFFD7E8FF), child: Text(c.title.isNotEmpty ? c.title[0].toUpperCase() : '?', style: const TextStyle(fontWeight: FontWeight.bold, color: EmployeeUi.primary))),
-        title: Text(c.title, style: EmployeeUi.title(15)),
-        subtitle: Text(c.latestMessage, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.montserrat(fontSize: 13, color: Colors.black54)),
-        trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        leading: CircleAvatar(
+          radius: 24, 
+          backgroundColor: c.type == 'dm' ? const Color(0xFFD7E8FF) : const Color(0xFFEBDFF6),
+          child: Text(
+            c.title.isNotEmpty ? c.title[0].toUpperCase() : '?', 
+            style: TextStyle(
+              fontWeight: FontWeight.bold, 
+              color: c.type == 'dm' ? EmployeeUi.primary : Colors.purple,
+            ),
+          ),
+        ),
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(child: Text(c.title, style: EmployeeUi.title(15), overflow: TextOverflow.ellipsis)),
+            Text(timeStr, style: GoogleFonts.montserrat(fontSize: 10, color: Colors.grey)),
+          ],
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(c.latestMessage, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.montserrat(fontSize: 13, color: Colors.black54)),
+        ),
+        trailing: const Icon(Icons.chevron_right, color: Colors.grey, size: 20),
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ChatThreadScreen(channelId: c.id, title: c.title))),
       ),
     );

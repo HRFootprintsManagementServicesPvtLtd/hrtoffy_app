@@ -47,7 +47,8 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
     });
 
     try {
-      await supabase.functions.invoke(
+      debugPrint("OTP: Verifying OTP for ${widget.email}...");
+      final response = await supabase.functions.invoke(
         'verify-otp-reset-password',
         body: {
           'email': widget.email,
@@ -55,6 +56,19 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
           'new_password': password,
         },
       );
+
+      debugPrint("OTP: Status => ${response.status}");
+      debugPrint("OTP: Data => ${response.data}");
+
+      if (response.status != 200 && response.status != 204) {
+        final errorMsg = response.data is Map ? (response.data['error'] ?? response.data['message']) : "Server error";
+        throw Exception(errorMsg.toString());
+      }
+
+      final data = response.data;
+      if (data is Map && data['success'] == false) {
+        throw Exception(data['error'] ?? data['message'] ?? "Invalid OTP or request");
+      }
 
       if (!mounted) return;
 
@@ -67,9 +81,10 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
         ),
       );
     } catch (e) {
-      setState(() => _error = "Invalid OTP or expired");
+      debugPrint("OTP: Reset Exception => $e");
+      setState(() => _error = e.toString().replaceAll("Exception:", "").trim());
     } finally {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 

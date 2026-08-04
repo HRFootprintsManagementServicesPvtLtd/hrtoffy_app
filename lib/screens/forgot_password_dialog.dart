@@ -29,19 +29,50 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
     });
 
     try {
-      await supabase.functions.invoke(
+      debugPrint("OTP: Checking if email $email exists in employee_records...");
+      final empCheck = await supabase
+          .from('employee_records')
+          .select('id')
+          .eq('email', email)
+          .maybeSingle();
+
+      if (empCheck == null) {
+        setState(() => _error = "This email is not registered in our system.");
+        return;
+      }
+
+      debugPrint("OTP: Invoking request-password-otp for $email");
+      final response = await supabase.functions.invoke(
         'request-password-otp',
         body: {'email': email},
       );
 
+      debugPrint("OTP: Status => ${response.status}");
+      debugPrint("OTP: Data => ${response.data}");
+
+      if (response.status != 200 && response.status != 204) {
+        final errorMsg = response.data is Map ? (response.data['error'] ?? response.data['message']) : "Server error";
+        throw Exception(errorMsg.toString());
+      }
+
+      final data = response.data;
+      if (data is Map && data['success'] == false) {
+        throw Exception(data['error'] ?? data['message'] ?? "Failed to send OTP");
+      }
+
       if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("OTP sent successfully. Please check your email."), backgroundColor: Colors.green),
+      );
 
       // ✅ return email to LoginScreen
       Navigator.pop(context, email);
     } catch (e) {
-      setState(() => _error = "Failed to send OTP");
+      debugPrint("OTP: Exception => $e");
+      setState(() => _error = e.toString().replaceAll("Exception:", "").trim());
     } finally {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 

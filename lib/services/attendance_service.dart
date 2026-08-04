@@ -95,7 +95,22 @@ class AttendanceService {
       
       final res = await supabase
           .from('attendance_punch_logs')
-          .select('id, attendance_id, punch_time, punch_type, punch_address, site_id, in_fence, distance_m, accuracy_m, work_type')
+          .select(
+          '''
+id,
+attendance_id,
+punch_time,
+punch_type,
+punch_lat,
+punch_lng,
+punch_address,
+site_id,
+in_fence,
+distance_m,
+accuracy_m,
+work_type
+'''
+      )
           .eq('attendance_id', att['id'])
           .order('punch_time', ascending: true);
 
@@ -128,48 +143,76 @@ class AttendanceService {
     if (empId == null) return [];
 
     List<dynamic> data = [];
+
     try {
+      debugPrint("========== getResolvedWorkSites ==========");
+      debugPrint("empId=$empId");
+      debugPrint("branchId=$branchId");
+      debugPrint("entityId=$entityId");
+      debugPrint("orgId=$orgId");
+
+      debugPrint("STEP 1: Checking direct assignments...");
       final direct = await supabase
           .from('work_site_assignments')
           .select('work_sites(id, name, latitude, longitude, radius_meters)')
           .eq('employee_id', empId);
+      debugPrint("STEP 1 DONE");
 
       if (direct.isNotEmpty) {
-        data = direct.map((e) => e['work_sites']).where((e) => e != null).toList();
+        data = direct
+            .map((e) => e['work_sites'])
+            .where((e) => e != null)
+            .toList();
+        debugPrint("Using direct assignments");
       } else {
         if (branchId != null) {
+          debugPrint("STEP 2: Checking branch...");
           final branchSites = await supabase
               .from('work_sites')
               .select('id, name, latitude, longitude, radius_meters')
               .eq('branch_id', branchId)
               .eq('is_active', true);
+          debugPrint("STEP 2 DONE");
+
           if (branchSites.isNotEmpty) {
             data = branchSites;
+            debugPrint("Using branch sites");
           }
         }
-        
+
         if (data.isEmpty && entityId != null) {
+          debugPrint("STEP 3: Checking entity...");
           final entitySites = await supabase
               .from('work_sites')
               .select('id, name, latitude, longitude, radius_meters')
               .eq('entity_id', entityId)
               .eq('is_active', true);
+          debugPrint("STEP 3 DONE");
+
           if (entitySites.isNotEmpty) {
             data = entitySites;
+            debugPrint("Using entity sites");
           }
         }
-        
+
         if (data.isEmpty && orgId != null) {
+          debugPrint("STEP 4: Checking organization...");
           final orgSites = await supabase
               .from('work_sites')
               .select('id, name, latitude, longitude, radius_meters')
               .eq('organization_id', orgId)
               .eq('is_active', true);
+          debugPrint("STEP 4 DONE");
+
           data = orgSites;
+          debugPrint("Using organization sites");
         }
       }
-    } catch (e) {
-      debugPrint("getResolvedWorkSites error: $e");
+
+      debugPrint("Total sites: ${data.length}");
+    } catch (e, st) {
+      debugPrint("getResolvedWorkSites ERROR: $e");
+      debugPrintStack(stackTrace: st);
     }
 
     return data.whereType<Map<String, dynamic>>().map(WorkSite.fromMap).toList();
@@ -242,7 +285,7 @@ class AttendanceService {
     required bool geoTrackOnly,
     required List<WorkSite> workSites,
     required Future<bool> Function(String siteName, double distance, double allowed) onShowGeoConfirm,
-    required VoidCallback onSuccess,
+    required Future<void> Function() onSuccess,
     required Function(String error) onError,
     required Function(bool loading) onLoading,
   }) async {
@@ -434,7 +477,7 @@ class AttendanceService {
 
       if (type == 'punch_in' && attId != null) {
         final shiftEndTime = localNow.copyWith(hour: 17, minute: 0);
-        // Start tracking without awaiting to prevent punch flow timeout
+
         GeoTrackerService.startTracking(
           organizationId: orgId.toString(),
           employeeId: empId.toString(),
@@ -443,6 +486,10 @@ class AttendanceService {
           shiftEndTime: shiftEndTime,
         ).catchError((e) => debugPrint("GEOTRACKER START ERROR: $e"));
       }
+
+      debugPrint("PUNCH COMPLETED");
+
+      onSuccess();
 
       onSuccess();
     } catch (e, st) {

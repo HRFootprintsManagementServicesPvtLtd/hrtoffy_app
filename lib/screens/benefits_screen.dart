@@ -403,8 +403,20 @@ class MyBenefitsTab extends StatelessWidget {
           itemBuilder: (c, i) {
             final claim = claims[i];
             final benefit = claim['benefits_catalog'] ?? {};
+            final pastelColors = [
+              const Color(0xFFEAF4FF), // Soft Blue
+              const Color(0xFFFFF3E6), // Soft Peach
+              const Color(0xFFEAFBF2), // Soft Mint
+              const Color(0xFFFFEEF5), // Soft Pink
+              const Color(0xFFF2EEFF), // Soft Lavender
+              const Color(0xFFFFF9E8), // Soft Yellow
+            ];
+
+            final cardColor = pastelColors[i % pastelColors.length];
             return Container(
-              decoration: EmployeeUi.cardDecoration(),
+              decoration: EmployeeUi.cardDecoration().copyWith(
+                color: cardColor,
+              ),
               child: Padding(
                 padding: const EdgeInsets.all(14.0),
                 child: Column(

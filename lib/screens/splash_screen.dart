@@ -51,6 +51,7 @@ class _GifSplashScreenState extends State<GifSplashScreen>
 
     if (session != null) {
       final email = session.user.email ?? "";
+      await FirebaseNotificationService.setupFCM(userEmail: email);
 
       // Fetch employee UUID safely
       final empRes = await supabase

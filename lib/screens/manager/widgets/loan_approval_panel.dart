@@ -107,6 +107,14 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
   }
 
   Future<void> handleAction(dynamic loan, String action, String comments) async {
+    if ((loan['status'] ?? '').toString().toLowerCase() != 'pending') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("This request has already been processed."),
+        ),
+      );
+      return;
+    }
     if (managerProfile == null) return;
     final myId = managerProfile!['id'];
 
@@ -114,13 +122,37 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
       // Simplified workflow action for mobile
       // In web it calls processWorkflowAction which syncs to status
       final status = action == 'approve' ? 'approved' : 'rejected';
-      
-      await supabase.from('loans_advances').update({
+      debugPrint("========== LOAN ACTION ==========");
+      debugPrint("Action Received : $action");
+      debugPrint("Status To Save  : $status");
+      debugPrint("Loan ID         : ${loan['id']}");
+      debugPrint("Loan Number     : ${loan['loan_number']}");
+      final Map<String, dynamic> updateData = {
         'status': status,
         'manager_comments': comments,
-        'interest_amount': 0.0, // ✅ Fixed: Set default 0 to satisfy potential DB trigger requirement
         'updated_at': DateTime.now().toIso8601String(),
-      }).eq('id', loan['id']);
+      };
+      debugPrint("Requested Amount: ${loan['requested_amount']}");
+      debugPrint("Approved Amount: ${updateData['approved_amount']}");
+
+      if (status == 'approved') {
+        updateData['approved_amount'] = loan['requested_amount'];
+      }
+
+      await supabase
+          .from('loans_advances')
+          .update(updateData)
+          .eq('id', loan['id']);
+
+
+      final check = await supabase
+          .from('loans_advances')
+          .select('status')
+          .eq('id', loan['id'])
+          .single();
+
+      debugPrint("Status in DB : ${check['status']}");
+      debugPrint("================================");
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -224,10 +256,19 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
               DataCell(Text("₹ ---", style: _cellStyle())), // Masked as per requirement
               DataCell(Text("${loan['tenure_months'] ?? '-'} months", style: _cellStyle())),
               DataCell(_buildStatusBadge(loan['status'])),
-              DataCell(TextButton(
-                onPressed: () => _showReviewDialog(loan),
-                child: Text("Review", style: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.blue.shade700)),
-              )),
+              DataCell(
+                TextButton(
+                  onPressed: () => _showReviewDialog(loan),
+                  child: Text(
+                    loan['status'] == 'pending' ? "Review" : "View",
+                    style: GoogleFonts.montserrat(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue.shade700,
+                    ),
+                  ),
+                ),
+              ),
             ]);
           }).toList(),
         ),
@@ -238,7 +279,6 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
   Widget _headerText(String label) {
     return Text(label, style: GoogleFonts.montserrat(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.grey.shade600));
   }
-
   TextStyle _cellStyle({bool isBold = false}) {
     return GoogleFonts.montserrat(fontSize: 12, fontWeight: isBold ? FontWeight.bold : FontWeight.w500, color: Colors.black87);
   }
@@ -263,6 +303,7 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
   void _showReviewDialog(dynamic loan) {
     final controller = TextEditingController();
     final emp = loan['employee_records'] ?? {};
+    final currentStatus = (loan['status'] ?? '').toString().toLowerCase();
     
     showDialog(
       context: context,
@@ -292,39 +333,67 @@ class _LoanApprovalPanelState extends State<LoanApprovalPanel> {
             ),
           ],
         ),
-        actions: [
+        actions: currentStatus == 'pending'
+            ? [
           Row(
             children: [
               Expanded(
                 child: OutlinedButton(
-                  onPressed: () { Navigator.pop(ctx); handleAction(loan, 'reject', controller.text); },
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    handleAction(loan, 'reject', controller.text);
+                  },
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.red, 
+                    foregroundColor: Colors.red,
                     side: const BorderSide(color: Colors.red),
                     padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                   ),
-                  child: const Text("Reject", style: TextStyle(fontWeight: FontWeight.bold)),
+                  child: const Text(
+                    "Reject",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton(
-                  onPressed: () { Navigator.pop(ctx); handleAction(loan, 'approve', controller.text); },
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    handleAction(loan, 'approve', controller.text);
+                  },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green, 
+                    backgroundColor: Colors.green,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                     elevation: 0,
                   ),
-                  child: const Text("Approve", style: TextStyle(fontWeight: FontWeight.bold)),
+                  child: const Text(
+                    "Approve",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
               ),
             ],
+          ),
+        ]
+            : [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              "This request is already ${loan['status']}",
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),
     );
   }
 }
+
+

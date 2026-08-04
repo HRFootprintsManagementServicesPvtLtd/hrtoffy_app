@@ -25,6 +25,7 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 // ============================================================================
 // 🔵 BACKGROUND NOTIFICATION HANDLER
 // ============================================================================
+@pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
 
@@ -48,6 +49,7 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       notification.title ?? 'New Notification',
       notification.body ?? '',
       details,
+      payload: message.data['payload'] ?? message.data['category'] ?? 'default',
     );
   }
 }
@@ -217,12 +219,13 @@ Future<void> main() async {
       // DEFAULT
       // =========================
       else {
-
         navigatorKey.currentState?.push(
           MaterialPageRoute(
-            builder: (_) => DashboardScreen(
-              email: user.email!,
+            builder: (_) => NotificationsScreen(
               employeeId: employeeId,
+              userEmail: user.email!,
+              userData: employee,
+              fetchHrmsContext: fetchHrmsContext,
             ),
           ),
         );
@@ -232,6 +235,9 @@ Future<void> main() async {
 
   // Auto-login check
   final session = Supabase.instance.client.auth.currentSession;
+  if (session != null && session.user.email != null) {
+    FirebaseNotificationService.setupFCM(userEmail: session.user.email!);
+  }
 
   runApp(
     ChangeNotifierProvider(
@@ -461,19 +467,47 @@ class MyApp extends StatelessWidget {
 // 🔵 FIREBASE NOTIFICATION SERVICE
 // ============================================================================
 class FirebaseNotificationService {
+  static bool _initialized = false;
+
   static Future<void> setupFCM({required String userEmail}) async {
+    if (_initialized) return;
+    _initialized = true;
+
     FirebaseMessaging messaging = FirebaseMessaging.instance;
-    await messaging.requestPermission(alert: true, badge: true, sound: true);
+    
+    // Request permission
+    NotificationSettings settings = await messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+    print('User granted permission: ${settings.authorizationStatus}');
+
+    // Get token
     final token = await messaging.getToken();
     print("🔑 FCM Token: $token");
-    // Save token
+
     if (token != null) {
-      await Supabase.instance.client
-          .from("employee_records")
-          .update({"fcm_token": token}).eq("email", userEmail);
+      try {
+        final response = await Supabase.instance.client
+            .from("employee_records")
+            .update({"fcm_token": token})
+            .eq("email", userEmail)
+            .select();
+
+        print("==================================");
+        print("UPDATE RESPONSE:");
+        print(response);
+        print("==================================");
+      } catch (e) {
+        print("❌ UPDATE ERROR");
+        print(e);
+      }
     }
-    // FOREGROUND LISTENER
-    FirebaseMessaging.onMessage.listen((message) async {
+
+    // 1. FOREGROUND LISTENER
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+      print("📩 Foreground Message Received: ${message.notification?.title}");
       final notification = message.notification;
       if (notification != null) {
         const androidDetails = AndroidNotificationDetails(
@@ -487,30 +521,75 @@ class FirebaseNotificationService {
           largeIcon: DrawableResourceAndroidBitmap('toffy_big'),
         );
         const details = NotificationDetails(android: androidDetails);
+
         await flutterLocalNotificationsPlugin.show(
           DateTime.now().millisecondsSinceEpoch ~/ 1000,
           notification.title,
           notification.body,
           details,
+          payload: message.data['payload'] ?? message.data['category'] ?? 'default',
         );
       }
     });
-    // WHEN USER TAPS NOTIFICATION
-    FirebaseMessaging.onMessageOpenedApp.listen((message) async {
-      final ctx = navigatorKey.currentContext;
-      final logged = Supabase.instance.client.auth.currentUser;
-      String? empId;
-      if (logged != null) {
-        final res = await Supabase.instance.client
-            .from("employee_records")
-            .select("id")
-            .eq("email", logged.email!)
-            .maybeSingle();
-        empId = res?['id'];
-      }
-      final target = message.data['employee_id'] ?? empId;
-      if (ctx != null && target != null) {
+
+    // 2. WHEN USER TAPS NOTIFICATION (Background State)
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
+      print("🔔 Notification tapped while in background: ${message.data}");
+      _handleNotificationClick(message.data);
+    });
+
+    // 3. INITIAL MESSAGE (Terminated State)
+    messaging.getInitialMessage().then((RemoteMessage? message) {
+      if (message != null) {
+        print("🔔 App launched from notification: ${message.data}");
+        _handleNotificationClick(message.data);
       }
     });
+  }
+
+  static Future<void> _handleNotificationClick(Map<String, dynamic> data) async {
+    final payload = data['payload'] ?? data['category'];
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    try {
+      final employee = await Supabase.instance.client
+          .from('employee_records')
+          .select()
+          .eq('email', user.email!)
+          .single();
+      
+      final employeeId = employee['id'];
+
+      Widget destination;
+      if (payload == "leave") {
+        destination = LeavesScreen(email: user.email!, userData: employee, fetchHrmsContext: fetchHrmsContext);
+      } else if (payload == "announcement") {
+        destination = AnnouncementsScreen(
+          organizationId: employee['organization_id']?.toString() ?? '',
+          userDepartment: employee['department']?.toString() ?? '',
+          userEmail: user.email!,
+          userData: employee,
+          fetchHrmsContext: fetchHrmsContext,
+        );
+      } else if (payload == "event") {
+        destination = EventsCalendarScreen(email: user.email!, userData: employee, fetchHrmsContext: fetchHrmsContext);
+      } else if (payload == "payroll") {
+        destination = PayslipScreen(userEmail: user.email!, userData: employee, fetchHrmsContext: fetchHrmsContext);
+      } else if (payload == "survey") {
+        destination = SurveysScreen(userEmail: user.email!, userData: employee, fetchHrmsContext: fetchHrmsContext);
+      } else {
+        destination = NotificationsScreen(
+          employeeId: employeeId,
+          userEmail: user.email!,
+          userData: employee,
+          fetchHrmsContext: fetchHrmsContext,
+        );
+      }
+
+      navigatorKey.currentState?.push(MaterialPageRoute(builder: (_) => destination));
+    } catch (e) {
+      print("Error handling notification click: $e");
+    }
   }
 }

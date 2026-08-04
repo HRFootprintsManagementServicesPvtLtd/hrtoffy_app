@@ -291,11 +291,7 @@ class _AppDrawerState extends State<AppDrawer> {
                   DrawerRoute.tax,
                   () => _go(
                     context,
-                    TaxDeductionScreen(
-                      userEmail: widget.userEmail,
-                      userData: widget.userData,
-                      fetchHrmsContext: widget.fetchHrmsContext,
-                    ),
+                      const TaxDeductionScreen()
                   ),
                 ),
 

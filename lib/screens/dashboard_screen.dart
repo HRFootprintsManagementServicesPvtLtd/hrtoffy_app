@@ -8,7 +8,6 @@ import 'package:intl/intl.dart';
 import 'package:geolocator/geolocator.dart';
 import 'notification.dart';
 import 'dart:async';
-import '../widgets/skeleton_layouts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/drawer_route.dart';
@@ -18,6 +17,8 @@ import 'leaves_screen.dart';
 import 'payslip_screen.dart';
 import 'attendance_screen.dart';
 import '../services/attendance_service.dart';
+import '../services/leave_summary_service.dart';
+import '../widgets/skeleton_layouts.dart';
 
 class LiveClock extends StatelessWidget {
   const LiveClock({super.key});
@@ -45,6 +46,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
   final supabase = Supabase.instance.client;
+  RealtimeChannel? _notificationChannel;
   Map<String, dynamic>? userData;
   Map<String, dynamic>? orgDetails;
   Map<String, dynamic>? mealVoucherState;
@@ -56,7 +58,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final Map<String, String> workTypeOptions = {'On-Duty': 'on-duty', 'Work From Home': 'work-from-home', 'On-Site': 'on-site'};
   String selectedWorkType = "On-Duty";
   Future<Map<String, dynamic>>? todayAttendanceFuture;
-  late Future<Map<String, dynamic>> leaveSummaryFuture = Future.value({"available": 0, "used": 0, "pending": 0, "year": DateTime.now().year});
+  late Future<LeaveSummary> leaveSummaryFuture = Future.value(LeaveSummary.empty());
+
 
   bool geoEnabled = false, geoChecking = false, geoInFence = false, geoTrackOnly = false;
   String geoMode = 'strict';
@@ -72,7 +75,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _subscribeNotifications() {
-    supabase.channel('notifications_updates').onPostgresChanges(event: PostgresChangeEvent.insert, schema: 'public', table: 'notifications', callback: (p) => fetchNotifications()).subscribe();
+    _notificationChannel = supabase
+        .channel('notifications_updates')
+        .onPostgresChanges(
+      event: PostgresChangeEvent.insert,
+      schema: 'public',
+      table: 'notifications',
+      callback: (payload) {
+        if (!mounted) return;
+        fetchNotifications();
+      },
+    );
+
+    _notificationChannel!.subscribe();
   }
 
   Future<void> _initialize() async {
@@ -82,7 +97,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       userData = resp;
       if (userData != null) {
         final empId = userData!['id'], orgId = userData!['organization_id'];
-        leaveSummaryFuture = fetchLeaveSummary(empId);
+        leaveSummaryFuture = LeaveSummaryService.instance.fetch();
+
         todayAttendanceFuture = fetchTodayAttendanceData();
         if (orgId != null) {
           await Future.wait([fetchMealVoucher(), fetchOrganizationDetails(orgId), fetchCompanyLogo(), _loadGeoFencePolicy()]);
@@ -183,26 +199,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  Future<Map<String, dynamic>> fetchLeaveSummary(String? id) async {
-    if (id == null) return {"available": 0, "used": 0, "pending": 0, "year": DateTime.now().year};
-    try {
-      final lbRes = await supabase.from('leave_balances').select().eq('employee_id', id).order('year', ascending: false).limit(1);
-      final pendingRes = await supabase.from('leave_applications').select('total_days').eq('employee_id', id).eq('status', 'pending');
-      double pending = 0;
-      if (pendingRes != null) for (var i in pendingRes) pending += double.tryParse(i['total_days']?.toString() ?? '0') ?? 0;
-      Map<String, dynamic>? lb = lbRes.isNotEmpty ? lbRes.first : null;
-      return {"available": lb?['remaining_days'] ?? 0, "used": lb?['used_days'] ?? 0, "pending": pending, "year": lb?['year'] ?? DateTime.now().year};
-    } catch (e) { return {"available": 0, "used": 0, "pending": 0, "year": DateTime.now().year}; }
+  // Kept as a thin wrapper for backward compatibility with any older
+  // callers. Delegates to the shared LeaveSummaryService so Dashboard
+  // and Leave screen always show identical numbers.
+  Future<LeaveSummary> fetchLeaveSummary(String? _id) {
+    return LeaveSummaryService.instance.fetch();
   }
 
+
   Future<void> fetchNotifications() async {
-    if (userData == null) return;
+    if (!mounted || userData == null) return;
+
     try {
-      setState(() => loadingNotifications = true);
-      final res = await supabase.from('notifications').select().eq('recipient_employee_id', userData!['id']).order('created_at', ascending: false);
-      setState(() { notifications = List<Map<String, dynamic>>.from(res); unreadCount = notifications.where((n) => n['read'] == false).length; });
+      if (mounted) {
+        setState(() => loadingNotifications = true);
+      }
+
+      final res = await supabase
+          .from('notifications')
+          .select()
+          .eq('recipient_employee_id', userData!['id'])
+          .order('created_at', ascending: false);
+
+      if (!mounted) return;
+
+      setState(() {
+        notifications = List<Map<String, dynamic>>.from(res);
+        unreadCount =
+            notifications.where((n) => n['read'] == false).length;
+      });
+
       AppBadgePlus.updateBadge(unreadCount);
-    } catch (e) {} finally { setState(() => loadingNotifications = false); }
+    } catch (e) {
+      debugPrint(e.toString());
+    } finally {
+      if (mounted) {
+        setState(() => loadingNotifications = false);
+      }
+    }
   }
 
   Future<void> fetchMealVoucher() async {
@@ -227,11 +261,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> fetchManagerData(String email) async { final resp = await supabase.from('employee_records').select().eq('email', email).maybeSingle(); if (resp != null) setState(() { managerName = resp['full_name'] ?? '--'; managerEmail = resp['email'] ?? '--'; }); }
 
   @override
+  void dispose() {
+    if (_notificationChannel != null) {
+      supabase.removeChannel(_notificationChannel!);
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey, backgroundColor: EmployeeUi.pageBg,
       endDrawer: AppDrawer(userEmail: widget.email, userData: userData ?? {}, companyLogoUrl: companyLogoUrl, fetchHrmsContext: fetchHrmsContext, currentRoute: DrawerRoute.dashboard),
-      body: loadingProfile ? const Center(child: CircularProgressIndicator()) : CustomScrollView(physics: const AlwaysScrollableScrollPhysics(), slivers: [
+      body: loadingProfile
+          ? dashboardFullSkeleton()
+          : CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+
         SliverAppBar(expandedHeight: 160, floating: false, pinned: true, automaticallyImplyLeading: false, backgroundColor: Colors.white, elevation: 0, actions: [
           Padding(padding: const EdgeInsets.only(right: 8, top: 12), child: _circleIconBtn(icon: "assets/icons/notification.svg", onTap: () { final empId = (userData?['id'] ?? userData?['employee_id'])?.toString() ?? ''; if (empId.isNotEmpty) Navigator.push(context, MaterialPageRoute(builder: (_) => NotificationsScreen(employeeId: empId, userEmail: widget.email, userData: userData ?? {}, fetchHrmsContext: fetchHrmsContext))); })),
           Padding(padding: const EdgeInsets.only(right: 16, top: 12), child: _circleIconBtn(icon: "assets/icons/menu.svg", onTap: () => _scaffoldKey.currentState?.openEndDrawer())),
@@ -276,7 +323,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final logs = List<Map<String, dynamic>>.from(data?['logs'] ?? []);
       
       // Calculate state exactly like AttendanceScreen
-      final bool isPunchedIn = att != null && att['punch_in_time'] != null && att['punch_out_time'] == null;
+      final punchLogs = logs
+          .where((e) =>
+      e['punch_type'] == 'punch_in' ||
+          e['punch_type'] == 'punch_out')
+          .toList();
+
+      final bool isPunchedIn;
+
+      if (punchLogs.isEmpty) {
+        isPunchedIn = false;
+      } else {
+        punchLogs.sort(
+              (a, b) => DateTime.parse(a['punch_time'])
+              .compareTo(DateTime.parse(b['punch_time'])),
+        );
+
+        isPunchedIn = punchLogs.last['punch_type'] == 'punch_in';
+      }
 
       final latestIn = logs.where((r) => r['punch_type'] == 'punch_in').toList();
       final latestOut = logs.where((r) => r['punch_type'] == 'punch_out').toList();
@@ -296,14 +360,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _timeMetric(String label, String value) => Column(children: [Text(label, style: GoogleFonts.montserrat(fontSize: 11, color: Colors.black54, fontWeight: FontWeight.w600)), const SizedBox(height: 4), Text(value, style: EmployeeUi.header(18))]);
 
-  Widget _buildLeaveBalanceSection() => FutureBuilder<Map<String, dynamic>>(future: leaveSummaryFuture, builder: (context, snapshot) {
-    final data = snapshot.data ?? {};
+  Widget _buildLeaveBalanceSection() => FutureBuilder<LeaveSummary>(future: leaveSummaryFuture, builder: (context, snapshot) {
+    final data = snapshot.data ?? LeaveSummary.empty();
     return Container(padding: const EdgeInsets.all(24), decoration: EmployeeUi.cardDecoration(color: EmployeeUi.peachBg), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("Leave Balance", style: EmployeeUi.title(16)), Text(data['year']?.toString() ?? "", style: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black26))]),
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("Leave Balance", style: EmployeeUi.title(16)), Text(data.year.toString(), style: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black26))]),
       const SizedBox(height: 24),
-      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_balanceMetric("Available", data['available']?.toString() ?? "0", Colors.blue), _balanceMetric("Used", data['used']?.toString() ?? "0", Colors.green), _balanceMetric("Pending", data['pending']?.toString() ?? "0", Colors.orange)]),
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        _balanceMetric("Allocated", data.totalAllocated.toString(), Colors.blue),
+        _balanceMetric("Used", data.totalUsed.toString(), Colors.green),
+        _balanceMetric("Remaining", data.totalRemaining.toString(), Colors.teal),
+        _balanceMetric("Pending", data.pendingRequests.toString(), Colors.orange),
+        _balanceMetric("Policies", data.leavePolicyCount.toString(), Colors.deepPurple),
+      ]),
     ]));
   });
+
 
   Widget _balanceMetric(String label, String value, Color color) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black45)), const SizedBox(height: 4), Text(value, style: EmployeeUi.header(24).copyWith(color: color))]);
 

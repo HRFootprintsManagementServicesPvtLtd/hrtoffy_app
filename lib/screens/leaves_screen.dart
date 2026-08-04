@@ -11,7 +11,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import '../widgets/drawer_route.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/employee_ui.dart';
-
+import '../services/leave_summary_service.dart';
 import '../widgets/bottom_nav_toffy_button.dart';
 import 'dashboard_screen.dart';
 import 'attendance_screen.dart';
@@ -48,18 +48,34 @@ class _LeavesScreenState extends State<LeavesScreen>
     super.initState();
     _leaveMgmtSubTabController = TabController(length: 2, vsync: this);
 
+    // Rebuild-only listener so IndexedStack follows the tab index.
     _leaveMgmtSubTabController.addListener(() {
       if (!mounted) return;
-
-      if (_leaveMgmtSubTabController.indexIsChanging) {
-        startLoad();
-      }
+      if (_leaveMgmtSubTabController.indexIsChanging) return;
+      setState(() {});
     });
-    startLoad();
+
+    // 🔑 Kick the RefreshableScreen mixin once so buildRefreshable()
+    // flips from skeleton to the real IndexedStack. Without this the
+    // page stays on the skeleton forever.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) startLoad();
+    });
+  }
+
+
+
+  void _handleTabIndexChanged() {
+    // Fires twice per swipe (indexIsChanging=true, then =false).
+    // We only need the settled event to flip IndexedStack.
+    if (_leaveMgmtSubTabController.indexIsChanging) return;
+    if (!mounted) return;
+    setState(() {}); // pure rebuild; no fetch, no reloadTrigger bump
   }
 
   @override
   void dispose() {
+    _leaveMgmtSubTabController.removeListener(_handleTabIndexChanged);
     _leaveMgmtSubTabController.dispose();
     super.dispose();
   }
@@ -433,6 +449,10 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
   final supabase = Supabase.instance.client;
   late Future<_SummaryData> _futureSummary;
 
+  // Re-entrancy guard: prevents overlapping RPC calls when the widget
+  // rebuilds rapidly (tab switches, pull-to-refresh, reloadTrigger).
+  bool _inflight = false;
+
   @override
   void initState() {
     super.initState();
@@ -442,7 +462,9 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
   @override
   void didUpdateWidget(covariant LeaveSummaryCards oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.reloadTrigger != widget.reloadTrigger) {
+    // Only refetch when reloadTrigger actually advances.
+    if (widget.reloadTrigger != oldWidget.reloadTrigger &&
+        widget.reloadTrigger > oldWidget.reloadTrigger) {
       setState(() {
         _futureSummary = _fetchSummary();
       });
@@ -450,96 +472,37 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
   }
 
   Future<_SummaryData> _fetchSummary() async {
-    final currentYear = DateTime.now().year;
-
+    if (_inflight) {
+      // Return the currently pending future instead of firing a duplicate RPC.
+      return _futureSummary;
+    }
+    _inflight = true;
     try {
-      final emp = await supabase
-          .from('employee_records')
-          .select('id, organization_id')
-          .eq('email', widget.email)
-          .maybeSingle();
-
-      if (emp == null) return _SummaryData.empty();
-
-      final employeeId = emp['id'];
-      final orgId = emp['organization_id'];
-
-      final balancesRes = await supabase
-          .from('leave_balances')
-          .select(
-            'allocated_days, used_days, remaining_days, leave_type_id, leave_types(name, days_allowed)',
-          )
-          .eq('employee_id', employeeId)
-          .eq('year', currentYear);
-
-      final policiesRes = await supabase
-          .from('leave_types')
-          .select('id, name, days_allowed')
-          .eq('organization_id', orgId);
-
-      final pendingRes = await supabase
-          .from('leave_applications')
-          .select('id')
-          .eq('employee_id', employeeId)
-          .eq('status', 'pending');
-
-      Map<String, _PolicyBalance> policyMap = {};
-
-      // if balances exist, use them
-      if (balancesRes != null &&
-          balancesRes is List &&
-          balancesRes.isNotEmpty) {
-        for (final b in balancesRes) {
-          final pName = b['leave_types']?['name'] ?? "Unnamed Policy";
-          final pDays = b['leave_types']?['days_allowed'] ?? 0;
-
-          policyMap[pName] = _PolicyBalance(
-            policyName: pName,
-            allocated: b['allocated_days'] ?? pDays,
-            used: (b['used_days'] ?? 0).toInt(),
-            remaining: (b['remaining_days'] ?? 0).toInt(),
-          );
-        }
-      } else {
-        // fallback to leave_types if balances missing
-        if (policiesRes != null) {
-          for (final p in policiesRes) {
-            final name = p['name'] ?? "Unnamed Policy";
-            final days = p['days_allowed'] ?? 0;
-
-            policyMap[name] = _PolicyBalance(
-              policyName: name,
-              allocated: days,
-              used: 0,
-              remaining: days,
-            );
-          }
-        }
-      }
-
-      // totals
-      int totalAllocated = 0, totalUsed = 0, totalRemaining = 0;
-
-      for (final p in policyMap.values) {
-        totalAllocated += p.allocated;
-        totalUsed += p.used;
-        totalRemaining += p.remaining;
-      }
-
-      final pendingCount = pendingRes != null ? pendingRes.length : 0;
-
+      final s = await LeaveSummaryService.instance.fetch();
       return _SummaryData(
-        totalAllocated: totalAllocated,
-        totalUsed: totalUsed,
-        totalRemaining: totalRemaining,
-        leavePolicyCount: policyMap.length,
-        pendingRequests: pendingCount,
-        policyBalances: policyMap.values.toList(),
+        totalAllocated: s.totalAllocated,
+        totalUsed: s.totalUsed,
+        totalRemaining: s.totalRemaining,
+        leavePolicyCount: s.leavePolicyCount,
+        pendingRequests: s.pendingRequests,
+        policyBalances: s.policies
+            .map((p) => _PolicyBalance(
+          policyName: p.name,
+          allocated: p.allocated,
+          used: p.used,
+          remaining: p.remaining,
+        ))
+            .toList(),
       );
-    } catch (_) {
-      return _SummaryData.empty();
+    } catch (e, stack) {
+      debugPrint("SUMMARY ERROR: $e");
+      debugPrint(stack.toString());
+      rethrow;
+    } finally {
+      _inflight = false;
     }
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -784,6 +747,7 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
   DateTime? selectedDay;
   List? selectedEvents;
   bool _loadingEvents = true;
+  bool _eventsInflight = false;
   late Future<void> _fetchFuture;
 
   @override
@@ -803,58 +767,36 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
   }
 
   Future<void> _fetchEvents() async {
-    setState(() => _loadingEvents = true);
+    if (_eventsInflight) return;
+    _eventsInflight = true;
+
+    if (mounted) setState(() => _loadingEvents = true);
 
     try {
-      final emp = await supabase
-          .from('employee_records')
-          .select('id')
-          .eq('email', widget.email)
-          .maybeSingle();
-      if (emp == null) {
-        setState(() {
-          leaveEvents = {};
-          selectedEvents = [];
-          _loadingEvents = false;
-        });
-        return;
-      }
-      final employeeId = emp['id'];
-
-      final from = DateTime.now().subtract(const Duration(days: 365));
-      final to = DateTime.now().add(const Duration(days: 365));
-
-      final fromStr =
-          "${from.year.toString().padLeft(4, '0')}-${from.month.toString().padLeft(2, '0')}-${from.day.toString().padLeft(2, '0')}";
-      final toStr =
-          "${to.year.toString().padLeft(4, '0')}-${to.month.toString().padLeft(2, '0')}-${to.day.toString().padLeft(2, '0')}";
-
-      final leaves = await supabase
-          .from('leave_applications')
-          .select()
-          .eq('employee_id', employeeId)
-          .gte('from_date', fromStr)
-          .lte('to_date', toStr);
+      // debug_get_my_leaves is SECURITY DEFINER — it resolves the caller's
+      // employee row via auth.email() and returns their leaves directly.
+      // No need for a separate employee_records lookup here.
+      final leaves = await supabase.rpc('debug_get_my_leaves');
 
       final Map<DateTime, List<dynamic>> events = {};
       if (leaves != null) {
-        for (final leave in leaves) {
+        for (final leave in leaves as List) {
           DateTime start;
           DateTime end;
           try {
-            start = DateTime.parse(leave['from_date']);
+            start = DateTime.parse(leave['from_date'].toString());
           } catch (_) {
             continue;
           }
           try {
-            end = DateTime.parse(leave['to_date']);
+            end = DateTime.parse(leave['to_date'].toString());
           } catch (_) {
             end = start;
           }
           for (
-            var d = start;
-            !d.isAfter(end);
-            d = d.add(const Duration(days: 1))
+          var d = start;
+          !d.isAfter(end);
+          d = d.add(const Duration(days: 1))
           ) {
             final normalized = DateTime(d.year, d.month, d.day);
             events.putIfAbsent(normalized, () => []).add(leave);
@@ -862,6 +804,7 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
         }
       }
 
+      if (!mounted) return;
       setState(() {
         leaveEvents = events;
         selectedDay = focusedDay;
@@ -870,13 +813,17 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
       });
     } catch (e) {
       debugPrint('fetchEvents error: $e');
+      if (!mounted) return;
       setState(() {
         leaveEvents = {};
         selectedEvents = [];
         _loadingEvents = false;
       });
+    } finally {
+      _eventsInflight = false;
     }
   }
+
 
   List<dynamic> _eventsForDay(DateTime day) {
     return leaveEvents[DateTime(day.year, day.month, day.day)] ?? [];

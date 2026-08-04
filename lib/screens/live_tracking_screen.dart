@@ -17,15 +17,42 @@ class LiveTrackingMapScreen extends StatelessWidget {
       );
     }
 
-    final first = logs.first;
+    final validLogs = logs.where((log) {
+      return log['punch_lat'] != null &&
+          log['punch_lng'] != null;
+    }).toList();
+
+    if (validLogs.isEmpty) {
+      return Scaffold(
+        appBar: EmployeeUi.appBar(title: "Location History"),
+        backgroundColor: EmployeeUi.pageBg,
+        body: Center(
+          child: Text(
+            "No GPS location available",
+            style: GoogleFonts.montserrat(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+
+    final first = validLogs.first;
     return Scaffold(
       appBar: EmployeeUi.appBar(title: "Location History"),
       body: GoogleMap(
-        initialCameraPosition: CameraPosition(target: LatLng(first['punch_lat'], first['punch_lng']), zoom: 15),
-        markers: logs.map<Marker>((log) {
+        initialCameraPosition: CameraPosition(
+          target: LatLng(
+            (first['punch_lat'] as num).toDouble(),
+            (first['punch_lng'] as num).toDouble(),
+          ),
+          zoom: 15,
+        ),
+        markers: validLogs.map<Marker>((log) {
           return Marker(
             markerId: MarkerId(log['id']),
-            position: LatLng(log['punch_lat'], log['punch_lng']),
+            position: LatLng(
+              (log['punch_lat'] as num).toDouble(),
+              (log['punch_lng'] as num).toDouble(),
+            ),
             infoWindow: InfoWindow(title: log['punch_type'], snippet: log['punch_time']),
           );
         }).toSet(),

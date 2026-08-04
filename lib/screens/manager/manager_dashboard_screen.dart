@@ -76,7 +76,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       // 1. Fetch Manager Profile with full fields for SnapshotSection
       final employeeRecord = await supabase
           .from('employee_records')
-          .select('id, organization_id, full_name, avatar_url, designation, department, manager_name, reviewer_name, location, assigned_worksite, employee_id, email')
+          .select('id, organization_id, full_name, avatar_url, designation, department, manager_name, reviewer_name, location,  employee_id, email')
           .eq('email', currentUser.email!)
           .maybeSingle();
       
