@@ -13,6 +13,7 @@ import 'payslip_screen.dart';
 import 'notification.dart';
 import '../widgets/drawer_route.dart';
 import '../widgets/employee_ui.dart';
+import 'survey_response_screen.dart';
 
 class SurveysScreen extends StatefulWidget {
   final String userEmail;
@@ -39,6 +40,20 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
   Map<String, dynamic>? employeeData;
   List<Map<String, dynamic>> activeSurveys = [];
   List<Map<String, dynamic>> completedSurveys = [];
+
+
+  final List<Color> pastelColors = [
+    const Color(0xFFFFF3E0),
+    const Color(0xFFE8F5E9),
+    const Color(0xFFE3F2FD),
+    const Color(0xFFF3E5F5),
+    const Color(0xFFFFEBEE),
+    const Color(0xFFE0F7FA),
+    const Color(0xFFF9FBE7),
+    const Color(0xFFFFF8E1),
+  ];
+
+
   TabController? _tabController;
 
   @override
@@ -210,15 +225,30 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
     return ListView.builder(
       padding: const EdgeInsets.all(20),
       itemCount: list.length,
-      itemBuilder: (context, i) => _buildSurveyCard(list[i], isActive),
+      itemBuilder: (context, i) =>
+          _buildSurveyCard(list[i], isActive, i),
     );
   }
 
-  Widget _buildSurveyCard(Map<String, dynamic> s, bool isActive) {
+  Widget _buildSurveyCard(
+      Map<String, dynamic> s,
+      bool isActive,
+      int index,
+      ){
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(20),
-      decoration: EmployeeUi.cardDecoration(),
+      decoration: BoxDecoration(
+        color: pastelColors[index % pastelColors.length],
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -226,7 +256,39 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(child: Text(s['title'] ?? '', style: EmployeeUi.title(15))),
-              if (!isActive) Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)), child: Text("COMPLETED", style: GoogleFonts.montserrat(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.green))),
+              if (!isActive)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        "COMPLETED",
+                        style: GoogleFonts.montserrat(
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green.shade700,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "Submitted",
+                        style: GoogleFonts.montserrat(
+                          fontSize: 8,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 8),
@@ -234,7 +296,23 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
           if (isActive) ...[
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: () {}, // To be implemented with form
+              onPressed: () async {
+                final done = await Navigator.push<bool>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => SurveyResponseScreen(
+                      survey: s,
+                      employeeId: employeeData!['id'],
+                      organizationId: employeeData!['organization_id'],
+                      userEmail: widget.userEmail,
+                    ),
+                  ),
+                );
+
+                if (done == true) {
+                  await fetchEmployeeAndSurveys();
+                }
+              }, // To be implemented with form
               style: ElevatedButton.styleFrom(backgroundColor: EmployeeUi.primary, foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 44), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 0),
               child: const Text("Participate Now", style: TextStyle(fontWeight: FontWeight.bold)),
             ),

@@ -218,10 +218,36 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen>
     else if (priority == 'medium') priorityColor = Colors.orange;
     else priorityColor = Colors.blue;
 
+    final pastelColors = [
+      const Color(0xFFFFF4E5), // Peach
+      const Color(0xFFEAF8F3), // Mint
+      const Color(0xFFEFF5FF), // Sky Blue
+      const Color(0xFFFFF0F5), // Baby Pink
+      const Color(0xFFF4F1FF), // Lavender
+      const Color(0xFFFFFBEA), // Soft Yellow
+    ];
+
+    final cardColor =
+    pastelColors[(ann['id'].toString().hashCode).abs() % pastelColors.length];
+
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(20),
-      decoration: EmployeeUi.cardDecoration(),
+      decoration: BoxDecoration(
+        color: cardColor,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: Colors.white,
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

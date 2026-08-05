@@ -5,6 +5,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../widgets/chat_message_bubble.dart';
 import '../widgets/employee_ui.dart';
+import 'package:path/path.dart' as path;
+import 'package:mime/mime.dart';
 
 class ChatThreadScreen extends StatefulWidget {
   final String channelId;
@@ -49,7 +51,120 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       loadMessages();
     } catch (e) {}
   }
+  Future<void> pickFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        withData: false,
+      );
 
+      if (result == null) return;
+
+      final picked = result.files.single;
+
+      if (picked.path == null) return;
+
+      if (picked.size > 10 * 1024 * 1024) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Maximum file size is 10 MB"),
+          ),
+        );
+        return;
+      }
+
+      await sendAttachment(File(picked.path!));
+    } catch (e) {
+      debugPrint(e.toString());
+    }
+  }
+  Future<void> sendAttachment(File file) async {
+    try {
+      final supabase = Supabase.instance.client;
+
+      final userId = supabase.auth.currentUser!.id;
+
+      //----------------------------------
+      // Resolve employee id
+      //----------------------------------
+
+      String? senderEmployeeId;
+
+      final emp = await supabase
+          .from('employee_records')
+          .select('id')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+      if (emp != null) {
+        senderEmployeeId = emp['id'];
+      }
+
+      //----------------------------------
+      // Upload
+      //----------------------------------
+
+      final fileName =
+          "${DateTime.now().millisecondsSinceEpoch}-${path.basename(file.path)}";
+
+      final storagePath =
+          "${widget.channelId}/$fileName";
+
+      await supabase.storage
+          .from('chat-attachments')
+          .upload(
+        storagePath,
+        file,
+      );
+
+      //----------------------------------
+      // Signed URL
+      //----------------------------------
+
+      final signedUrl = await supabase.storage
+          .from('chat-attachments')
+          .createSignedUrl(
+        storagePath,
+        3600,
+      );
+
+      //----------------------------------
+      // Insert message
+      //----------------------------------
+
+      final msg = await supabase
+          .from('chat_messages')
+          .insert({
+        'channel_id': widget.channelId,
+        'sender_id': senderEmployeeId,
+        'sender_user_id': userId,
+        'content': "📎 ${path.basename(file.path)}",
+        'message_type': 'file',
+      })
+          .select()
+          .single();
+
+      //----------------------------------
+      // Attachment row
+      //----------------------------------
+
+      await supabase
+          .from('chat_attachments')
+          .insert({
+        'message_id': msg['id'],
+        'file_name': path.basename(file.path),
+        'file_url': storagePath,
+        'file_size': await file.length(),
+        'file_type': lookupMimeType(file.path),
+      });
+
+      loadMessages();
+
+    } catch (e) {
+      debugPrint("ATTACHMENT ERROR");
+      debugPrint(e.toString());
+    }
+  }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -73,7 +188,10 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
             child: SafeArea(
               child: Row(
                 children: [
-                  IconButton(onPressed: () {}, icon: const Icon(Icons.attach_file, color: Colors.grey)),
+                  IconButton(
+                    icon: const Icon(Icons.attach_file, color: Colors.grey),
+                    onPressed: pickFile,
+                  ),
                   Expanded(child: TextField(controller: messageController, decoration: InputDecoration(hintText: "Type a message...", hintStyle: GoogleFonts.montserrat(fontSize: 14), border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none), filled: true, fillColor: const Color(0xFFF3F4F6), contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8)))),
                   const SizedBox(width: 8),
                   CircleAvatar(backgroundColor: EmployeeUi.primary, child: IconButton(onPressed: sendMessage, icon: const Icon(Icons.send, color: Colors.white, size: 18))),

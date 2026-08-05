@@ -41,7 +41,7 @@ class ChatService {
       debugPrint("[Messages] Fetching details for ${channelIds.length} channels");
       final List<dynamic> channelsData = await supabase
           .from('chat_channels')
-          .select('*, chat_channel_members(user_id)')
+          .select('created_at, *, chat_channel_members(user_id)')
           .inFilter('id', channelIds);
 
       final List<ChatConversation> conversations = [];
@@ -112,7 +112,7 @@ class ChatService {
       'title': title,
       'type': channel['channel_type'],
       'latest_message': latestMsg?['content'] ?? 'No messages yet',
-      'latest_time': latestMsg?['created_at'],
+      'latest_time': latestMsg?['created_at'] ?? channel['created_at'],
     });
   }
 

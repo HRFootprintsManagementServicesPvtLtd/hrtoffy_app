@@ -156,37 +156,33 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
       debugPrint("name = ${nameController.text}");
       debugPrint("==================================");
 
-      final data = {
-        'organization_id': organizationId,
-        'name': name,
-        'title': name,
-        'description': descriptionController.text.trim(),
-        'channel_type': 'group',
-        'created_by': currentUserId,
-      };
+      // Build arrays required by the RPC
+      final memberUserIds = selectedEmployees
+          .map((e) => e['user_id'])
+          .where((e) => e != null)
+          .toList();
 
-      debugPrint("GROUP INSERT DATA => $data");
+      final memberEmployeeIds = selectedEmployees
+          .map((e) => e['id'])
+          .where((e) => e != null)
+          .toList();
 
-      final channel = await supabase
-          .from('chat_channels')
-          .insert(data)
-          .select()
-          .single();
+      debugPrint("RPC USER IDS: $memberUserIds");
+      debugPrint("RPC EMP IDS : $memberEmployeeIds");
 
-      final channelId = channel['id'];
-      debugPrint("[Messages] Channel created ID: $channelId, adding members...");
+      final channelId = await supabase.rpc(
+        'create_chat_channel',
+        params: {
+          'p_org_id': organizationId,
+          'p_channel_type': 'group',
+          'p_name': name,
+          'p_description': descriptionController.text.trim(),
+          'p_member_user_ids': memberUserIds,
+          'p_member_employee_ids': memberEmployeeIds,
+        },
+      );
 
-      final List<Map<String, dynamic>> membersToInsert = [
-        {'channel_id': channelId, 'user_id': currentUserId},
-      ];
-
-      for (final emp in selectedEmployees) {
-        if (emp['user_id'] != null) {
-          membersToInsert.add({'channel_id': channelId, 'user_id': emp['user_id']});
-        }
-      }
-
-      await supabase.from('chat_channel_members').insert(membersToInsert);
+      debugPrint("Created Channel ID => $channelId");
       
       debugPrint("[Messages] Channel and members successfully created");
       if (mounted) {

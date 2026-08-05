@@ -175,36 +175,25 @@ class _NewChatDialogState extends State<NewChatDialog> {
         debugPrint("currentUserId = $currentUserId");
         debugPrint("employee = $employee");
         debugPrint("===============================");
-        final data = {
-          'organization_id': organizationId,
-          'channel_type': 'dm',
-          'name': null,
-          'title': employee['full_name'],
-          'created_by': currentUserId,
-        };
+        final rpcResult = await supabase.rpc(
+          'create_chat_channel',
+          params: {
+            'p_org_id': organizationId,
+            'p_channel_type': 'dm',
+            'p_name': null,
+            'p_description': null,
+            'p_member_user_ids': [
+              selectedUserId,
+            ],
+            'p_member_employee_ids': [
+              employee['id'],
+            ],
+          },
+        );
 
-        debugPrint("DM INSERT DATA => $data");
-        final session = supabase.auth.currentSession;
-        debugPrint("Access token exists: ${session?.accessToken.isNotEmpty}");
-        debugPrint("User id from session: ${session?.user.id}");
-        debugPrint("========== SESSION ==========");
-        debugPrint("Session exists: ${session != null}");
-        debugPrint("Current user: ${supabase.auth.currentUser?.id}");
-        debugPrint("Access token length: ${session?.accessToken.length}");
-        debugPrint("Refresh token exists: ${session?.refreshToken != null}");
-        debugPrint("=============================");
+        channelId = rpcResult.toString();
 
-        final created = await supabase
-            .from('chat_channels')
-            .insert(data)
-            .select()
-            .single();
-        channelId = created['id'];
-
-        await supabase.from('chat_channel_members').insert([
-          {'channel_id': channelId, 'user_id': currentUserId},
-          {'channel_id': channelId, 'user_id': selectedUserId},
-        ]);
+        debugPrint("DM Channel Created => $channelId");
         debugPrint("[Messages] New conversation created: $channelId");
       }
 
