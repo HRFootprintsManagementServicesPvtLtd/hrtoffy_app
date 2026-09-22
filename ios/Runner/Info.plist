@@ -13,7 +13,7 @@
     <key>NSLocationAlwaysUsageDescription</key>
     <string>This app needs access to your location for geo-tracking attendance.</string>
 	<key>CFBundleDisplayName</key>
-	<string>Hrms App</string>
+	<string>HR Toffy</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
