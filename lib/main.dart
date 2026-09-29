@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -106,8 +107,16 @@ Future<void> main() async {
   const AndroidInitializationSettings androidInit =
   AndroidInitializationSettings('@drawable/ic_stat_notify');
 
-  const InitializationSettings initSettings =
-  InitializationSettings(android: androidInit);
+  const DarwinInitializationSettings iosInit = DarwinInitializationSettings(
+    requestAlertPermission: true,
+    requestBadgePermission: true,
+    requestSoundPermission: true,
+  );
+
+  final InitializationSettings initSettings = InitializationSettings(
+    android: androidInit,
+    iOS: iosInit,
+  );
 
   await flutterLocalNotificationsPlugin.initialize(
     initSettings,
