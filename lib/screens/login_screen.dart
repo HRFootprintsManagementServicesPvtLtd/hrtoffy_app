@@ -135,18 +135,27 @@ class _LoginScreenState extends State<LoginScreen> {
       if (authResponse.session == null) {
         throw Exception("Failed to create session");
       }
+      final employee = data['employee'];
+      if (employee == null) {
+        throw Exception("Employee data not found in response");
+      }
+      final userEmail = employee['email'];
+      final empRole = employee['emp_role'];
+      final employeeId = employee['id'];
+
+      if (userEmail == null || empRole == null || employeeId == null) {
+        throw Exception("Incomplete employee data in response");
+      }
+
       await Geolocator.requestPermission();
-      await FirebaseNotificationService.setupFCM(
-        userEmail: data['employee']['email'],
-      );
+      await FirebaseNotificationService.setupFCM(userEmail: userEmail);
       if (!mounted) return;
-      if (data['employee']['emp_role'] == "manager") {
+
+      if (empRole == "manager") {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (_) => ManagerDashboardScreen(
-              userEmail: data['employee']['email'],
-            ),
+            builder: (_) => ManagerDashboardScreen(userEmail: userEmail),
           ),
         );
       } else {
@@ -154,8 +163,8 @@ class _LoginScreenState extends State<LoginScreen> {
           context,
           MaterialPageRoute(
             builder: (_) => DashboardScreen(
-              email: data['employee']['email'],
-              employeeId: data['employee']['id'],
+              email: userEmail,
+              employeeId: employeeId,
             ),
           ),
         );
