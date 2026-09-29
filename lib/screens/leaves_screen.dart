@@ -479,7 +479,7 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
     _inflight = true;
     try {
       debugPrint("[LeavesScreen] Starting _fetchSummary()");
-      final s = await LeaveSummaryService.instance.fetch();
+      final s = await LeaveSummaryService.instance.fetch(userEmail: widget.email);
       debugPrint("[LeavesScreen] Service returned: allocated=${s.totalAllocated}, used=${s.totalUsed}, remaining=${s.totalRemaining}");
 
       final summaryData = _SummaryData(
