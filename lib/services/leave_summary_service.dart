@@ -61,16 +61,30 @@ class LeaveSummaryService {
   Future<LeaveSummary> fetch({int? year}) async {
     final currentYear = year ?? DateTime.now().year;
     try {
+      debugPrint('[LeaveSummary] Fetching leave summary for year: $currentYear');
       final res = await _supabase.rpc(
         'get_my_leave_summary',
         params: {'_year': currentYear},
       );
-      if (res == null) return LeaveSummary.empty(currentYear);
+
+      debugPrint('[LeaveSummary] Raw RPC response: $res');
+      debugPrint('[LeaveSummary] Response type: ${res.runtimeType}');
+
+      if (res == null) {
+        debugPrint('[LeaveSummary] Response is null, returning empty');
+        return LeaveSummary.empty(currentYear);
+      }
 
       final data = Map<String, dynamic>.from(res as Map);
+      debugPrint('[LeaveSummary] Parsed data keys: ${data.keys.toList()}');
+
       final balancesRes = (data['balances'] as List?) ?? const [];
       final policiesRes = (data['types'] as List?) ?? const [];
       final pendingCount = (data['pending'] as num?)?.toInt() ?? 0;
+
+      debugPrint('[LeaveSummary] balancesRes: $balancesRes');
+      debugPrint('[LeaveSummary] policiesRes: $policiesRes');
+      debugPrint('[LeaveSummary] pendingCount: $pendingCount');
 
       final leaveTypeMap = <String, Map<String, dynamic>>{
         for (final p in policiesRes)
@@ -112,6 +126,10 @@ class LeaveSummaryService {
         u += p.used;
         r += p.remaining;
       }
+
+      debugPrint('[LeaveSummary] Final totals - allocated: $a, used: $u, remaining: $r');
+      debugPrint('[LeaveSummary] Policy count: ${policyMap.length}');
+      debugPrint('[LeaveSummary] Policies: ${policyMap.values.toList()}');
 
       return LeaveSummary(
         totalAllocated: a,

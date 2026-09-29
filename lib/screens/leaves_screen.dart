@@ -478,8 +478,11 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
     }
     _inflight = true;
     try {
+      debugPrint("[LeavesScreen] Starting _fetchSummary()");
       final s = await LeaveSummaryService.instance.fetch();
-      return _SummaryData(
+      debugPrint("[LeavesScreen] Service returned: allocated=${s.totalAllocated}, used=${s.totalUsed}, remaining=${s.totalRemaining}");
+
+      final summaryData = _SummaryData(
         totalAllocated: s.totalAllocated,
         totalUsed: s.totalUsed,
         totalRemaining: s.totalRemaining,
@@ -494,6 +497,8 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
         ))
             .toList(),
       );
+      debugPrint("[LeavesScreen] Created summary data: $summaryData");
+      return summaryData;
     } catch (e, stack) {
       debugPrint("SUMMARY ERROR: $e");
       debugPrint(stack.toString());
