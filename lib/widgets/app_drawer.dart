@@ -17,7 +17,7 @@ import '../screens/announcements_screen.dart';
 import '../screens/events_calendar_screen.dart';
 import '../screens/surveys_screen.dart';
 import '../screens/faqs_screen.dart';
-import '../screens/login_screen.dart';
+import '../core/auth/sign_out.dart';
 import 'drawer_route.dart';
 import '../screens/goals_screen.dart';
 import '../screens/messages_screen.dart';
@@ -451,12 +451,7 @@ class _AppDrawerState extends State<AppDrawer> {
                       weight: FontWeight.w600,
                     ),
                   ),
-                  onTap: () {
-                    Navigator.of(context).pushAndRemoveUntil(
-                      MaterialPageRoute(builder: (_) => const LoginScreen()),
-                      (_) => false,
-                    );
-                  },
+                  onTap: () => signOutAndShowLogin(context),
                 ),
               ],
             ),

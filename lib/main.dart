@@ -4,6 +4,11 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
+import 'core/auth/auth_service.dart';
+import 'core/feature_flags.dart';
+import 'repositories/employee_repository.dart';
+import 'repositories/engagement_repository.dart';
+import 'repositories/leave_repository.dart';
 import 'providers/role_provider.dart';
 import 'screens/splash_screen.dart';
 import 'screens/notification.dart';
@@ -122,15 +127,11 @@ Future<void> main() async {
 
       if (payload == null) return;
 
-      final user = Supabase.instance.client.auth.currentUser;
+      final user = AuthService.instance.currentUser;
 
       if (user == null) return;
 
-      final employee = await Supabase.instance.client
-          .from('employee_records')
-          .select()
-          .eq('email', user.email!)
-          .single();
+      final employee = await EmployeeRepository().getMe();
       final orgId = employee['organization_id']?.toString() ?? '';
       final department = employee['department']?.toString() ?? '';
 
@@ -144,7 +145,7 @@ Future<void> main() async {
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => LeavesScreen(
-              email: user.email!,
+              email: user.email,
               userData: employee,
               fetchHrmsContext: fetchHrmsContext,
             ),
@@ -159,7 +160,7 @@ Future<void> main() async {
             builder: (_) => AnnouncementsScreen(
               organizationId: orgId,
               userDepartment: department,
-              userEmail: user.email!,
+              userEmail: user.email,
               userData: employee,
               fetchHrmsContext: fetchHrmsContext,
             ),
@@ -175,7 +176,7 @@ Future<void> main() async {
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => EventsCalendarScreen(
-              email: user.email!,
+              email: user.email,
               userData: employee,
               fetchHrmsContext: fetchHrmsContext,
             ),
@@ -191,7 +192,7 @@ Future<void> main() async {
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => PayslipScreen(
-              userEmail: user.email!,
+              userEmail: user.email,
               userData: employee,
               fetchHrmsContext: fetchHrmsContext,
             ),
@@ -207,7 +208,7 @@ Future<void> main() async {
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => SurveysScreen(
-              userEmail: user.email!,
+              userEmail: user.email,
               userData: employee,
               fetchHrmsContext: fetchHrmsContext,
             ),
@@ -223,7 +224,7 @@ Future<void> main() async {
           MaterialPageRoute(
             builder: (_) => NotificationsScreen(
               employeeId: employeeId,
-              userEmail: user.email!,
+              userEmail: user.email,
               userData: employee,
               fetchHrmsContext: fetchHrmsContext,
             ),
@@ -234,16 +235,30 @@ Future<void> main() async {
   );
 
   // Auto-login check
-  final session = Supabase.instance.client.auth.currentSession;
-  if (session != null && session.user.email != null) {
-    FirebaseNotificationService.setupFCM(userEmail: session.user.email!);
+  bool isLoggedIn;
+  if (FeatureFlags.useAwsAuth) {
+    // AWS backend session (token store + /auth/resolve-user).
+    isLoggedIn = await AuthService.instance.restoreSession();
+    // A rejected refresh token ends the session: send the user to login.
+    AuthService.instance.api.onSessionExpired.listen((_) {
+      navigatorKey.currentState?.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (_) => false,
+      );
+    });
+  } else {
+    final session = Supabase.instance.client.auth.currentSession;
+    if (session != null && session.user.email != null) {
+      FirebaseNotificationService.setupFCM(userEmail: session.user.email!);
+    }
+    isLoggedIn = session != null;
   }
 
   runApp(
     ChangeNotifierProvider(
       create: (_) => RoleProvider(),
       child: MyApp(
-        isLoggedIn: session != null,
+        isLoggedIn: isLoggedIn,
       ),
     ),
   );
@@ -294,45 +309,35 @@ Map<String, dynamic> buildAttendanceSummary(List<dynamic> logs) {
 }
 
 Future<Map<String, dynamic>> fetchHrmsContext() async {
-  final supabase = Supabase.instance.client;
-  final user = supabase.auth.currentUser;
+  final user = AuthService.instance.currentUser;
 
   if (user == null) {
     return {"error": "User not logged in"};
   }
 
-  final employee = await supabase
-      .from('employee_records')
-      .select()
-      .eq('email', user.email!)
-      .single();
+  final employees = EmployeeRepository();
+  final employee = await employees.getMe();
 
-  final employeeId = employee['id']; // UUID
+  // Leave balances come from the API (best effort: the assistant context is still built if they cannot
+  // be read). Punch logs are added back when the attendance group moves to the API; until then the
+  // assistant context carries an empty list for them.
+  final List<Map<String, dynamic>> leaveBalances = [];
+  try {
+    for (final b in await LeaveRepository().balances()) {
+      leaveBalances.add({'leave_type': b.name, 'balance': b.remaining});
+    }
+  } catch (_) {}
+  final List<dynamic> attendanceLogs = [];
 
+  Map<String, dynamic> sensitive = const {};
+  try {
+    sensitive = await employees.getSensitiveProfile();
+  } catch (_) {}
+  final salaryRow = {'salary': sensitive['salary']};
 
-  final leaveBalances = await supabase
-      .from('leave_balances')
-      .select('leave_type, balance')
-      .eq('employee_id', employeeId);
-
-  final attendanceLogs = await supabase
-      .from('attendance_punch_logs')
-      .select('punch_time')
-      .eq('employee_id', employeeId)
-      .order('punch_time', ascending: true);
-  final salaryRow = await supabase
-      .from('employee_salary_view')
-      .select('salary')
-      .eq('email', user.email!)
-      .maybeSingle();
-  debugPrint("🟡 SALARY ROW => $salaryRow");
-  final announcements = await supabase
-      .from('announcements')
-      .select('title, date')
-      .order('date', ascending: true);
-  debugPrint("🟡 PAYROLL CONTEXT => ${{
-    "salary": salaryRow?['salary'],
-  }}");
+  final announcements = (await EngagementRepository().announcements())
+      .map((a) => {'title': a['title'], 'date': a['created_at']})
+      .toList();
   return {
     "employee_profile": {
       "full_name": employee['full_name'],
@@ -350,7 +355,7 @@ Future<Map<String, dynamic>> fetchHrmsContext() async {
         .toList(),
     "attendance": buildAttendanceSummary(attendanceLogs),
     "payroll": {
-      "salary": salaryRow?['salary'],
+      "salary": salaryRow['salary'],
     },
     "announcements": announcements,
   };
@@ -549,39 +554,35 @@ class FirebaseNotificationService {
 
   static Future<void> _handleNotificationClick(Map<String, dynamic> data) async {
     final payload = data['payload'] ?? data['category'];
-    final user = Supabase.instance.client.auth.currentUser;
+    final user = AuthService.instance.currentUser;
     if (user == null) return;
 
     try {
-      final employee = await Supabase.instance.client
-          .from('employee_records')
-          .select()
-          .eq('email', user.email!)
-          .single();
-      
+      final employee = await EmployeeRepository().getMe();
+
       final employeeId = employee['id'];
 
       Widget destination;
       if (payload == "leave") {
-        destination = LeavesScreen(email: user.email!, userData: employee, fetchHrmsContext: fetchHrmsContext);
+        destination = LeavesScreen(email: user.email, userData: employee, fetchHrmsContext: fetchHrmsContext);
       } else if (payload == "announcement") {
         destination = AnnouncementsScreen(
           organizationId: employee['organization_id']?.toString() ?? '',
           userDepartment: employee['department']?.toString() ?? '',
-          userEmail: user.email!,
+          userEmail: user.email,
           userData: employee,
           fetchHrmsContext: fetchHrmsContext,
         );
       } else if (payload == "event") {
-        destination = EventsCalendarScreen(email: user.email!, userData: employee, fetchHrmsContext: fetchHrmsContext);
+        destination = EventsCalendarScreen(email: user.email, userData: employee, fetchHrmsContext: fetchHrmsContext);
       } else if (payload == "payroll") {
-        destination = PayslipScreen(userEmail: user.email!, userData: employee, fetchHrmsContext: fetchHrmsContext);
+        destination = PayslipScreen(userEmail: user.email, userData: employee, fetchHrmsContext: fetchHrmsContext);
       } else if (payload == "survey") {
-        destination = SurveysScreen(userEmail: user.email!, userData: employee, fetchHrmsContext: fetchHrmsContext);
+        destination = SurveysScreen(userEmail: user.email, userData: employee, fetchHrmsContext: fetchHrmsContext);
       } else {
         destination = NotificationsScreen(
           employeeId: employeeId,
-          userEmail: user.email!,
+          userEmail: user.email,
           userData: employee,
           fetchHrmsContext: fetchHrmsContext,
         );

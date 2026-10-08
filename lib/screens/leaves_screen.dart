@@ -2,8 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:table_calendar/table_calendar.dart';
+import '../repositories/leave_repository.dart';
 import '../widgets/skeleton_layouts.dart';
 import '../widgets/refreshable_screen.dart';
 import 'package:dropdown_button2/dropdown_button2.dart';
@@ -36,7 +36,6 @@ class LeavesScreen extends StatefulWidget {
 class _LeavesScreenState extends State<LeavesScreen>
     with TickerProviderStateMixin, RefreshableScreen<LeavesScreen> {
   late TabController _leaveMgmtSubTabController;
-  final SupabaseClient supabase = Supabase.instance.client;
   // 🔑 STEP 2 — ADD THESE
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 1; // Leave tab index
@@ -170,6 +169,7 @@ class _LeavesScreenState extends State<LeavesScreen>
                   LeaveCalendarTab(
                     email: widget.email,
                     reloadTrigger: _reloadTrigger,
+                    onChanged: () => setState(() => _reloadTrigger++),
                   ),
                 ],
               );
@@ -287,7 +287,7 @@ class _LeavesScreenState extends State<LeavesScreen>
                   index: _leaveMgmtSubTabController.index,
                   children: [
                     LeaveSummaryCards(email: widget.email, reloadTrigger: _reloadTrigger),
-                    LeaveCalendarTab(email: widget.email, reloadTrigger: _reloadTrigger),
+                    LeaveCalendarTab(email: widget.email, reloadTrigger: _reloadTrigger, onChanged: () => setState(() => _reloadTrigger++)),
                   ],
                 );
               },
@@ -435,18 +435,47 @@ class LeaveSummaryCards extends StatefulWidget {
   final String email;
   final int reloadTrigger;
 
+  /// Tests only: the service to read through (defaults to the shared one).
+  final LeaveSummaryService? service;
+
   const LeaveSummaryCards({
     Key? key,
     required this.email,
     required this.reloadTrigger,
+    this.service,
   }) : super(key: key);
 
   @override
   State<LeaveSummaryCards> createState() => _LeaveSummaryCardsState();
 }
 
+/// Shown when a Leave tab could not load: a message that is safe to display and a retry.
+class _LeaveLoadError extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+  const _LeaveLoadError({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off, size: 40, color: Colors.grey.shade500),
+            const SizedBox(height: 12),
+            Text(message, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black87)),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('Retry')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
-  final supabase = Supabase.instance.client;
   late Future<_SummaryData> _futureSummary;
 
   // Re-entrancy guard: prevents overlapping RPC calls when the widget
@@ -478,7 +507,7 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
     }
     _inflight = true;
     try {
-      final s = await LeaveSummaryService.instance.fetch();
+      final s = await (widget.service ?? LeaveSummaryService.instance).fetch();
       return _SummaryData(
         totalAllocated: s.totalAllocated,
         totalUsed: s.totalUsed,
@@ -509,6 +538,16 @@ class _LeaveSummaryCardsState extends State<LeaveSummaryCards> {
     return FutureBuilder<_SummaryData>(
       future: _futureSummary,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _LeaveLoadError(
+            message: friendlyLeaveError(snapshot.error!),
+            onRetry: () {
+              setState(() {
+                _futureSummary = _fetchSummary();
+              });
+            },
+          );
+        }
         if (!snapshot.hasData) return const SkeletonLeaveSummaryPage();
         final data = snapshot.data!;
 
@@ -730,10 +769,18 @@ class _PolicyBalance {
 class LeaveCalendarTab extends StatefulWidget {
   final String email;
   final int reloadTrigger;
+
+  /// Called after the employee changes a request here (cancel), so the Summary refreshes too.
+  final VoidCallback? onChanged;
+
+  /// Tests only: the repository to read through (defaults to the signed-in session's).
+  final LeaveRepository? repository;
   const LeaveCalendarTab({
     Key? key,
     required this.email,
     required this.reloadTrigger,
+    this.onChanged,
+    this.repository,
   }) : super(key: key);
 
   @override
@@ -741,7 +788,8 @@ class LeaveCalendarTab extends StatefulWidget {
 }
 
 class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
-  final supabase = Supabase.instance.client;
+  late final LeaveRepository _leaves = widget.repository ?? LeaveRepository();
+  String? _loadError;
   Map<DateTime, List<dynamic>> leaveEvents = {};
   DateTime focusedDay = DateTime.now();
   DateTime? selectedDay;
@@ -770,17 +818,25 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
     if (_eventsInflight) return;
     _eventsInflight = true;
 
-    if (mounted) setState(() => _loadingEvents = true);
+    if (mounted) {
+      setState(() {
+        _loadingEvents = true;
+        _loadError = null;
+      });
+    }
 
     try {
-      // debug_get_my_leaves is SECURITY DEFINER — it resolves the caller's
-      // employee row via auth.email() and returns their leaves directly.
-      // No need for a separate employee_records lookup here.
-      final leaves = await supabase.rpc('debug_get_my_leaves');
+      // The caller's own applications overlapping the calendar's window (today +-365 days),
+      // fetched page by page from the API.
+      final now = DateTime.now();
+      final leaves = await _leaves.history(
+        from: now.subtract(const Duration(days: 365)),
+        to: now.add(const Duration(days: 365)),
+      );
 
       final Map<DateTime, List<dynamic>> events = {};
-      if (leaves != null) {
-        for (final leave in leaves as List) {
+      {
+        for (final leave in leaves) {
           DateTime start;
           DateTime end;
           try {
@@ -817,10 +873,61 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
       setState(() {
         leaveEvents = {};
         selectedEvents = [];
+        _loadError = friendlyLeaveError(e);
         _loadingEvents = false;
       });
     } finally {
       _eventsInflight = false;
+    }
+  }
+
+  void _retryLoad() {
+    setState(() {
+      _fetchFuture = _fetchEvents();
+    });
+  }
+
+  /// Colour of a status (badge and calendar marker). Cancelled is grey: it is not leave.
+  static Color _statusColor(String status) {
+    if (LeaveStatus.isCancelled(status)) return Colors.grey;
+    if (LeaveStatus.isRejected(status)) return Colors.red;
+    if (LeaveStatus.isPendingLike(status)) return Colors.orange;
+    if (LeaveStatus.isApproved(status)) return Colors.green;
+    return Colors.blue;
+  }
+
+  Future<void> _cancelApplication(Map leave) async {
+    final id = (leave['id'] ?? '').toString();
+    if (id.isEmpty) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel leave request'),
+        content: const Text('Withdraw this leave request? This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep it')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Cancel request')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await _leaves.cancel(id);
+      if (!mounted) return;
+      Navigator.of(context).maybePop(); // close the day sheet
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: const Text('Leave request cancelled'), backgroundColor: Colors.green.shade700),
+      );
+      if (widget.onChanged != null) {
+        widget.onChanged!();
+      } else {
+        _retryLoad();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(friendlyLeaveError(e)), backgroundColor: Colors.red.shade700),
+      );
     }
   }
 
@@ -913,8 +1020,12 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
                             Row(
                               children: [
                                 Icon(
-                                  Icons.check_circle,
-                                  color: Colors.green.shade700,
+                                  LeaveStatus.isCancelled(leave['status'])
+                                      ? Icons.cancel
+                                      : Icons.check_circle,
+                                  color: LeaveStatus.isCancelled(leave['status'])
+                                      ? Colors.grey
+                                      : Colors.green.shade700,
                                 ),
                                 const SizedBox(width: 8),
                                 Expanded(
@@ -931,21 +1042,13 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
                                     vertical: 6,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: status == 'APPROVED'
-                                        ? Colors.green.shade50
-                                        : (status == 'PENDING'
-                                              ? Colors.orange.shade50
-                                              : Colors.red.shade50),
+                                    color: _statusColor(status).withOpacity(0.12),
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   child: Text(
-                                    status,
+                                    status.replaceAll('_', ' '),
                                     style: TextStyle(
-                                      color: status == 'APPROVED'
-                                          ? Colors.green.shade800
-                                          : (status == 'PENDING'
-                                                ? Colors.orange.shade800
-                                                : Colors.red.shade800),
+                                      color: _statusColor(status).withOpacity(0.9),
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
@@ -1014,6 +1117,20 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
                                 ),
                               ),
                             ],
+                            if (LeaveStatus.canCancel(leave['status'])) ...[
+                              const SizedBox(height: 10),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: OutlinedButton.icon(
+                                  onPressed: () => _cancelApplication(leave),
+                                  icon: const Icon(Icons.close, size: 18),
+                                  label: const Text('Cancel request'),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.red.shade700,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       );
@@ -1030,6 +1147,9 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
   @override
   Widget build(BuildContext context) {
     if (_loadingEvents) return const SkeletonLeaveCalendar();
+    if (_loadError != null) {
+      return _LeaveLoadError(message: _loadError!, onRetry: _retryLoad);
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6),
       child: Column(
@@ -1052,23 +1172,22 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
               markerBuilder: (context, date, events) {
                 if (events.isEmpty) return const SizedBox.shrink();
 
-                final hasApproved = events.any(
-                  (e) => (e as Map<String, dynamic>)['status'] == 'approved',
-                );
-                final hasPending = events.any(
-                  (e) => (e as Map<String, dynamic>)['status'] == 'pending',
-                );
-                final hasRejected = events.any(
-                  (e) => (e as Map<String, dynamic>)['status'] == 'rejected',
+                bool any(bool Function(String status) test) => events.any(
+                  (e) => test(LeaveStatus.normalize((e as Map)['status'])),
                 );
 
+                // Active statuses win over a withdrawn request on the same day.
                 Color color = Colors.blue;
-                if (hasRejected) {
+                if (any(LeaveStatus.isRejected)) {
                   color = Colors.red;
-                } else if (hasPending) {
+                } else if (any(LeaveStatus.isPendingLike)) {
                   color = Colors.orange;
-                } else if (hasApproved) {
+                } else if (any(LeaveStatus.isApproved)) {
                   color = Colors.green;
+                } else if (events.every(
+                  (e) => LeaveStatus.isCancelled((e as Map)['status']),
+                )) {
+                  color = Colors.grey;
                 }
 
                 return Positioned(
@@ -1106,6 +1225,7 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
               _legendDot(Colors.green, 'Approved'),
               _legendDot(Colors.orange, 'Pending'),
               _legendDot(Colors.red, 'Rejected'),
+              _legendDot(Colors.grey, 'Cancelled'),
             ],
           ),
         ],
@@ -1142,7 +1262,10 @@ class LeaveApplicationForm extends StatefulWidget {
   final String email;
   final VoidCallback? onSubmitted;
 
-  const LeaveApplicationForm({Key? key, required this.email, this.onSubmitted})
+  /// Tests only: the repository to use (defaults to the signed-in session's).
+  final LeaveRepository? repository;
+
+  const LeaveApplicationForm({Key? key, required this.email, this.onSubmitted, this.repository})
     : super(key: key);
 
   @override
@@ -1150,7 +1273,7 @@ class LeaveApplicationForm extends StatefulWidget {
 }
 
 class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
-  final supabase = Supabase.instance.client;
+  late final LeaveRepository _leaves = widget.repository ?? LeaveRepository();
   final _formKey = GlobalKey<FormState>();
 
   String? leaveType;
@@ -1165,8 +1288,7 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
   late TextEditingController _reasonController;
 
   bool _loadingPolicies = true;
-  List<Map<String, dynamic>> policies = [];
-  String? _managerId;
+  List<LeaveBalance> policies = [];
 
   @override
   void initState() {
@@ -1174,7 +1296,7 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
     _fromController = TextEditingController();
     _toController = TextEditingController();
     _reasonController = TextEditingController();
-    _fetchPoliciesAndManager();
+    _loadBalances();
   }
 
   @override
@@ -1185,61 +1307,26 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
     super.dispose();
   }
 
-  Future<void> _fetchPoliciesAndManager() async {
-    setState(() => _loadingPolicies = true);
+  /// The leave types the employee can apply for: this year's balances, from the API.
+  Future<void> _loadBalances() async {
+    setState(() {
+      _loadingPolicies = true;
+      errorMessage = null;
+    });
 
     try {
-      final emp = await supabase
-          .from('employee_records')
-          .select('id, organization_id, manager_id')
-          .eq('email', widget.email)
-          .maybeSingle();
-
-      if (emp == null) {
-        setState(() {
-          policies = [];
-          _managerId = null;
-          _loadingPolicies = false;
-        });
-        return;
-      }
-
-      final orgId = emp['organization_id'];
-
-      debugPrint("LeavesScreen: Fetching leave balances...");
-      final leaveBalances = await supabase
-          .from('leave_balances')
-          .select('leave_type_id, remaining_days')
-          .eq('employee_id', emp['id'])
-          .eq('year', DateTime.now().year);
-      
-      List<Map<String, dynamic>> resolvedPolicies = [];
-      
-      if (leaveBalances != null && leaveBalances.isNotEmpty) {
-        final typeIds = leaveBalances.map((b) => b['leave_type_id'].toString()).toList();
-        final leaveTypes = await supabase.from('leave_types').select('id, name').inFilter('id', typeIds);
-        
-        final typeMap = { for (var t in leaveTypes) t['id'].toString() : t['name'] };
-        
-        resolvedPolicies = leaveBalances.map((b) {
-          final map = Map<String, dynamic>.from(b);
-          map['leave_types'] = { 'name': typeMap[b['leave_type_id'].toString()] ?? 'Unknown' };
-          return map;
-        }).toList();
-      }
-
-      debugPrint("LeavesScreen: Policies resolved: ${resolvedPolicies.length}");
-
+      final balances = await _leaves.balances();
+      if (!mounted) return;
       setState(() {
-        policies = resolvedPolicies;
-        _managerId = emp['manager_id'];
+        policies = balances;
         _loadingPolicies = false;
       });
     } catch (e) {
       debugPrint('fetchPolicies error: $e');
+      if (!mounted) return;
       setState(() {
         policies = [];
-        _managerId = null;
+        errorMessage = friendlyLeaveError(e);
         _loadingPolicies = false;
       });
     }
@@ -1266,30 +1353,15 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
     });
 
     try {
-      final emp = await supabase
-          .from('employee_records')
-          .select('id')
-          .eq('email', widget.email)
-          .maybeSingle();
-
-      if (emp == null) throw Exception('Employee not found');
-
-      final empId = emp['id'];
-      final days = toDate!.difference(fromDate!).inDays + 1;
-
-      final data = {
-        'employee_id': empId,
-        'manager_id': _managerId ?? empId,
-        'leave_type': leaveType,
-        'from_date': fromDate!.toIso8601String().substring(0, 10),
-        'to_date': toDate!.toIso8601String().substring(0, 10),
-        'total_days': days,
-        'reason': _reasonController.text.trim(),
-        'attachment_url': attachmentUrl,
-        'status': 'pending',
-      };
-
-      await supabase.from('leave_applications').insert([data]);
+      // The employee and the approval workflow are the server's: it works out the working days
+      // (holidays, weekly offs), checks the balance and starts the approval chain.
+      await _leaves.apply(
+        leaveTypeId: leaveType!,
+        from: fromDate!,
+        to: toDate!,
+        reason: _reasonController.text.trim(),
+        attachmentUrl: attachmentUrl,
+      );
 
       if (!mounted) return; // 🔐 VERY IMPORTANT
 
@@ -1306,14 +1378,15 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
     } catch (e) {
       if (!mounted) return;
 
+      final message = friendlyLeaveError(e);
       setState(() {
         submitting = false;
-        errorMessage = e.toString();
+        errorMessage = message;
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Error: $e'),
+          content: Text('Error: $message'),
           backgroundColor: Colors.red.shade700,
         ),
       );
@@ -1404,13 +1477,12 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
                       style: TextStyle(fontSize: 15, color: Colors.black54),
                     ),
 
-                    items: policies.where((p) => p['leave_types'] != null).map((
-                      p,
-                    ) {
+                    items: policies.map((p) {
+                      // the value is the leave type ID the API needs; the label is what the employee sees
                       return DropdownMenuItem<String>(
-                        value: p['leave_types']['name'],
+                        value: p.leaveTypeId,
                         child: Text(
-                          '${p['leave_types']['name']} (${p['remaining_days']} days)',
+                          '${p.name} (${formatLeaveDays(p.remaining)} days)',
                           style: const TextStyle(
                             fontSize: 15,
                             color: Colors.black87,

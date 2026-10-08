@@ -1,17 +1,18 @@
 // my_profile_screen.dart
 import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../core/api/api_client.dart';
+import '../core/auth/auth_service.dart';
+import '../repositories/employee_repository.dart';
+import '../repositories/file_repository.dart';
+import '../repositories/profile_repository.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
 import 'package:open_filex/open_filex.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:file_picker/file_picker.dart';
@@ -47,7 +48,9 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     with TickerProviderStateMixin,
         AutomaticKeepAliveClientMixin,
         RefreshableScreen<MyProfileScreen> {
-  final SupabaseClient supabase = Supabase.instance.client;
+  final _employees = EmployeeRepository();
+  final _profile = ProfileRepository();
+  final _files = FileRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   int _bottomTabIndex = 0;
@@ -94,25 +97,14 @@ class _MyProfileScreenState extends State<MyProfileScreen>
 
   // ------------ Error helper ------------
   String _friendly(Object e) {
-    if (e is PostgrestException) {
-      if (e.code == '57014') {
-        return 'The server is busy right now. Please pull to retry.';
-      }
-      if ((e.code ?? '').startsWith('42') ||
-          (e.message).toLowerCase().contains('permission')) {
-        return "You don't have permission to perform this action.";
-      }
+    if (e is ApiException) {
+      if (e.isNetworkError) return 'Network problem. Check your connection and retry.';
+      if (e.isForbidden) return "You don't have permission to perform this action.";
+      if (e.isUnauthorized) return 'Session expired — please sign in again.';
+      if (e.isServerError) return 'The server is busy right now. Please pull to retry.';
       return e.message;
     }
-    if (e is StorageException) {
-      final msg = e.message.toLowerCase();
-      if (msg.contains('bucket not found')) return 'Storage bucket not found.';
-      if (msg.contains('row-level security') || msg.contains('unauthorized')) {
-        return "You don't have permission to upload this file.";
-      }
-      return e.message;
-    }
-    if (e is AuthException) return e.message;
+    if (e is AuthFlowException) return e.message;
     if (e is TimeoutException) {
       return 'Taking longer than usual — pull to retry.';
     }
@@ -130,72 +122,30 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     if (_loading) return;
     _loading = true;
     try {
-      final empResp = await supabase
-          .from('employee_records')
-          .select()
-          .eq('email', widget.email)
-          .maybeSingle()
-          .timeout(const Duration(seconds: 20));
+      // The signed-in employee's own record (the API resolves "me" from the session).
+      final emp = await _fetchEmployee().timeout(const Duration(seconds: 20));
 
-      if (empResp == null) return;
-
-      var emp = Map<String, dynamic>.from(empResp);
-      final employeeId = emp['id'];
-
-      // Decrypt sensitive fields
-      /*try {
-        final session = supabase.auth.currentSession;
-        if (session != null) {
-          final decrypted = await supabase.functions.invoke(
-            'salary-encryption',
-            body: {
-              'action': 'decrypt',
-              'table': 'employee_records',
-              'record_id': employeeId,
-            },
-            headers: {'Authorization': 'Bearer ${session.accessToken}'},
-          );
-
-          final body = decrypted.data is String
-              ? jsonDecode(decrypted.data)
-              : decrypted.data;
-          final decryptedBody = Map<String, dynamic>.from(body ?? {});
-
-          if (decryptedBody['success'] == true) {
-            final decryptedData =
-            Map<String, dynamic>.from(decryptedBody['data'] ?? {});
-            emp = {...emp, ...decryptedData};
-          }
-        }
-      } catch (e) {
-        debugPrint('decryption error: $e');
-      }*/
-
-      final results = <dynamic>[];
-
-      results.add(await supabase
-          .from('gratuity_nominees')
-          .select()
-          .eq('employee_id', employeeId));
-
-      results.add([]);
-
-      results.add([]);
-
-      results.add(null);
+      // Nominees, insurance and documents load in parallel. One of them failing (for example a
+      // module switched off for the organization) leaves just that section empty.
+      Future<List<Map<String, dynamic>>> safe(String what, Future<List<Map<String, dynamic>>> f) =>
+          f.catchError((Object e) {
+            debugPrint('$what load error: $e');
+            return <Map<String, dynamic>>[];
+          });
+      final lists = await Future.wait<List<Map<String, dynamic>>>([
+        safe('nominees', _profile.nominees()),
+        safe('insurance', _profile.insurancePolicies()),
+        safe('documents', _profile.documents()),
+      ]);
 
       if (!mounted) return;
       setState(() {
         _emp = emp;
-        gratuityNominees = List<Map<String, dynamic>>.from(results[0] as List);
-        insurancePolicies =
-        List<Map<String, dynamic>>.from(results[1] as List);
-        employeeDocuments =
-        List<Map<String, dynamic>>.from(results[2] as List);
-        _org = results.length > 3 && results[3] != null
-            ? Map<String, dynamic>.from(results[3] as Map)
-            : null;
-        _companyLogoUrl = _org?['logo_url']?.toString();
+        gratuityNominees = lists[0];
+        insurancePolicies = lists[1];
+        employeeDocuments = lists[2];
+        _org = null;
+        _companyLogoUrl = null;
       });
     } on TimeoutException {
       _snack('Taking longer than usual — pull to retry.');
@@ -207,43 +157,24 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     }
   }
 
+  /// The employee record with the encrypted fields (PAN, UAN, bank account, salary) filled in
+  /// from the caller's own decrypted values. A decrypt failure just leaves them as returned.
+  Future<Map<String, dynamic>> _fetchEmployee() async {
+    final emp = await _employees.getMe();
+    try {
+      final sensitive = await _employees.getSensitiveProfile();
+      sensitive.forEach((key, value) {
+        if (value != null && value.toString().isNotEmpty) emp[key] = value;
+      });
+    } catch (e) {
+      debugPrint('decrypt error: $e');
+    }
+    return emp;
+  }
+
   Future<void> _reloadEmployee() async {
     try {
-      final empResp = await supabase
-          .from('employee_records')
-          .select()
-          .eq('email', widget.email)
-          .maybeSingle()
-          .timeout(const Duration(seconds: 15));
-      if (empResp == null) return;
-
-      var emp = Map<String, dynamic>.from(empResp);
-      try {
-        final session = supabase.auth.currentSession;
-        if (session != null) {
-          final decrypted = await supabase.functions.invoke(
-            'salary-encryption',
-            body: {
-              'action': 'decrypt',
-              'table': 'employee_records',
-              'record_id': emp['id'],
-            },
-            headers: {'Authorization': 'Bearer ${session.accessToken}'},
-          );
-          final body = decrypted.data is String
-              ? jsonDecode(decrypted.data)
-              : decrypted.data;
-          final decryptedBody = Map<String, dynamic>.from(body ?? {});
-          if (decryptedBody['success'] == true) {
-            emp = {
-              ...emp,
-              ...Map<String, dynamic>.from(decryptedBody['data'] ?? {})
-            };
-          }
-        }
-      } catch (e) {
-        debugPrint('decrypt reload error: $e');
-      }
+      final emp = await _fetchEmployee().timeout(const Duration(seconds: 15));
       if (!mounted) return;
       setState(() => _emp = emp);
     } catch (e) {
@@ -254,15 +185,9 @@ class _MyProfileScreenState extends State<MyProfileScreen>
   Future<void> _reloadNominees() async {
     if (_emp == null) return;
     try {
-      final res = await supabase
-          .from('gratuity_nominees')
-          .select()
-          .eq('employee_id', _emp!['id'])
-          .order('created_at', ascending: false)
-          .timeout(const Duration(seconds: 15));
+      final rows = await _profile.nominees().timeout(const Duration(seconds: 15));
       if (!mounted) return;
-      setState(() =>
-      gratuityNominees = List<Map<String, dynamic>>.from(res as List));
+      setState(() => gratuityNominees = rows);
     } catch (e) {
       debugPrint('_reloadNominees error: $e');
     }
@@ -271,15 +196,9 @@ class _MyProfileScreenState extends State<MyProfileScreen>
   Future<void> _reloadDocuments() async {
     if (_emp == null) return;
     try {
-      final res = await supabase
-          .from('employee_documents')
-          .select()
-          .eq('employee_id', _emp!['id'])
-          .order('uploaded_at', ascending: false)
-          .timeout(const Duration(seconds: 15));
+      final rows = await _profile.documents().timeout(const Duration(seconds: 15));
       if (!mounted) return;
-      setState(() =>
-      employeeDocuments = List<Map<String, dynamic>>.from(res as List));
+      setState(() => employeeDocuments = rows);
     } catch (e) {
       debugPrint('_reloadDocuments error: $e');
     }
@@ -288,90 +207,62 @@ class _MyProfileScreenState extends State<MyProfileScreen>
   Future<void> _reloadInsurance() async {
     if (_emp == null) return;
     try {
-      final res = await supabase
-          .from('employee_insurance_policies')
-          .select()
-          .eq('employee_id', _emp!['id'])
-          .timeout(const Duration(seconds: 15));
+      final rows = await _profile.insurancePolicies().timeout(const Duration(seconds: 15));
       if (!mounted) return;
-      setState(() =>
-      insurancePolicies = List<Map<String, dynamic>>.from(res as List));
+      setState(() => insurancePolicies = rows);
     } catch (e) {
       debugPrint('_reloadInsurance error: $e');
     }
   }
 
-  // ------------ Update profile (only success on real DB write) ------------
+  // ------------ Update profile (only success on a real server write) ------------
   Future<bool> _updateProfile(
       Map<String, dynamic> updates, {
         bool showSnack = true,
       }) async {
-    debugPrint("1");
+    try {
+      final changes = Map<String, dynamic>.from(updates);
+      // date_of_birth is a calendar date: send yyyy-MM-dd, not a timestamp.
+      final dob = changes['date_of_birth'];
+      if (dob is String && dob.length > 10) changes['date_of_birth'] = dob.substring(0, 10);
 
-    final rows = await supabase
-        .from('employee_records')
-        .update(updates)
-        .eq('id', _emp!['id'])
-        .select();
-
-    debugPrint("2");
-
-    debugPrint("3 BEFORE RELOAD");
-
-    await _reloadEmployee();
-
-    debugPrint("4 AFTER RELOAD");
-
-    debugPrint("5 BEFORE SNACK");
-
-    _snack("Updated");
-
-    debugPrint("6 AFTER SNACK");
-
-    return true;
+      await _employees.updateMe(changes);
+      await _reloadEmployee();
+      if (showSnack) _snack("Updated");
+      return true;
+    } catch (e) {
+      _snack(_friendly(e));
+      return false;
+    }
   }
 
-  // ------------ Documents: bucket resolution & preview/download ------------
-  ({String bucket, String path}) _resolveDoc(Map<String, dynamic> doc) {
-    final raw = (doc['file_url'] ?? '').toString();
-    if (raw.startsWith('http')) {
-      // Absolute URL — treat as public. Return bucket = '' to signal 'use URL directly'.
-      return (bucket: '', path: raw);
-    }
+  // ------------ Documents: preview/download ------------
+  /// A stored document reference is a `bucket/path` reference from the file API, a legacy bare path
+  /// (`personal/<id>/x.pdf`) or a full URL from the Supabase era; the server resolves all three.
+  String _docBucketHint(String raw) {
     final p = raw.startsWith('/') ? raw.substring(1) : raw;
-    if (p.startsWith('personal/') ||
-        p.startsWith('employee-documents/')) {
-      final path = p.startsWith('employee-documents/')
-          ? p.substring('employee-documents/'.length)
-          : p;
-      return (bucket: 'employee-documents', path: path);
-    }
-    if (p.startsWith('claim-documents/')) {
-      return (
-      bucket: 'claim-documents',
-      path: p.substring('claim-documents/'.length)
-      );
-    }
-    return (bucket: 'claim-documents', path: p);
+    return p.startsWith('claim-documents/') ? 'claim-documents' : 'employee-documents';
   }
 
   Future<String?> _signedUrlForDoc(Map<String, dynamic> doc) async {
-    final r = _resolveDoc(doc);
-    if (r.bucket.isEmpty) return r.path; // already URL
+    final raw = (doc['file_url'] ?? '').toString();
+    if (raw.isEmpty) {
+      _snack('This document has no file.');
+      return null;
+    }
+    final hint = _docBucketHint(raw);
     try {
-      return await supabase.storage
-          .from(r.bucket)
-          .createSignedUrl(r.path, 3600);
-    } on StorageException catch (e) {
-      // Try the other bucket as fallback
-      final other =
-      r.bucket == 'employee-documents' ? 'claim-documents' : 'employee-documents';
-      try {
-        return await supabase.storage.from(other).createSignedUrl(r.path, 3600);
-      } catch (_) {
-        _snack(_friendly(e));
-        return null;
+      return await _files.url(raw, bucketHint: hint, expiresInSeconds: 3600);
+    } on ApiException catch (e) {
+      // Some old rows point at the other documents bucket: retry once with it.
+      if (!raw.startsWith('http') && (e.statusCode == 404 || e.statusCode == 400)) {
+        final other = hint == 'employee-documents' ? 'claim-documents' : 'employee-documents';
+        try {
+          return await _files.url(raw, bucketHint: other, expiresInSeconds: 3600);
+        } catch (_) {}
       }
+      _snack(_friendly(e));
+      return null;
     } catch (e) {
       _snack(_friendly(e));
       return null;
@@ -481,15 +372,17 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     if (confirm != true) return;
 
     try {
-      final r = _resolveDoc(doc);
-      if (r.bucket.isNotEmpty) {
+      await _profile.deleteDocument(doc["id"].toString());
+
+      // Best effort: also remove the stored file (old Supabase-era URLs cannot be removed here).
+      final raw = (doc['file_url'] ?? '').toString();
+      if (raw.isNotEmpty && !raw.startsWith('http')) {
         try {
-          await supabase.storage.from(r.bucket).remove([r.path]);
+          await _files.delete(raw, bucketHint: _docBucketHint(raw));
         } catch (e) {
-          debugPrint('storage remove error: $e');
+          debugPrint('stored file remove error: $e');
         }
       }
-      await supabase.from("employee_documents").delete().eq("id", doc["id"]);
 
       if (mounted) {
         setState(() {
@@ -550,12 +443,12 @@ class _MyProfileScreenState extends State<MyProfileScreen>
             ElevatedButton(
               onPressed: () async {
                 try {
-                  await supabase.from("gratuity_nominees").update({
-                    "nominee_name": name.text.trim(),
-                    "relationship": relation.text.trim(),
-                    "share_percent": double.tryParse(share.text) ?? 0,
-                  }).eq("id", nominee["id"]).timeout(
-                      const Duration(seconds: 15));
+                  await _profile.updateNominee(
+                    nominee["id"].toString(),
+                    name: name.text.trim(),
+                    relationship: relation.text.trim(),
+                    sharePercent: double.tryParse(share.text) ?? 0,
+                  ).timeout(const Duration(seconds: 15));
                   if (mounted) Navigator.pop(context);
                   await _reloadNominees();
                   _snack("Nominee updated successfully");
@@ -576,14 +469,8 @@ class _MyProfileScreenState extends State<MyProfileScreen>
   }
 
   // ------------ Avatar ------------
-  String _sanitizeEmailForPath(String email) {
-    // Storage keys don't allow certain chars; keep policy-friendly
-    return email.replaceAll(RegExp(r'[^A-Za-z0-9._@-]'), '_');
-  }
-
   Future<void> _uploadAvatar() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) {
+    if (AuthService.instance.currentUser == null) {
       _snack("Session expired — please sign in again.");
       return;
     }
@@ -593,32 +480,22 @@ class _MyProfileScreenState extends State<MyProfileScreen>
 
     try {
       setState(() => _isUploadingAvatar = true);
-      final file = File(image.path);
       final ts = DateTime.now().millisecondsSinceEpoch;
-      final emailKey =
-      _sanitizeEmailForPath(user.email ?? widget.email);
-      // Path must satisfy avatars policy: starts_with(auth.email() || '.')
-      final path = '${user.id}/avatar_$ts.jpg';
 
-      debugPrint("Current User ID: ${user.id}");
-      debugPrint("Current Email: ${user.email}");
-      debugPrint("Upload Path: $path");
-
-      await supabase.storage.from('avatars').upload(
-        path,
-        file,
-        fileOptions: const FileOptions(
-          upsert: true,
-          contentType: 'image/jpeg',
-        ),
+      // The photo goes through the API into the public avatars bucket; the API returns its URL,
+      // which is then saved on the employee record.
+      final uploaded = await _files.upload(
+        bucket: 'avatars',
+        bytes: await image.readAsBytes(),
+        fileName: 'avatar_$ts.jpg',
+        contentType: 'image/jpeg',
       );
+      final publicUrl = uploaded.url;
+      if (publicUrl == null) throw const ApiException(500, 'Upload did not return a photo URL');
 
-      final publicUrl = supabase.storage.from('avatars').getPublicUrl(path);
-      final ok = await _updateProfile({'avatar_url': publicUrl},
-          showSnack: false);
-      if (ok) _snack("Profile photo updated.");
-    } on StorageException catch (e) {
-      _snack("Upload failed: ${_friendly(e)}");
+      await _employees.setAvatarUrl(publicUrl);
+      await _reloadEmployee();
+      _snack("Profile photo updated.");
     } catch (e) {
       _snack("Upload failed: ${_friendly(e)}");
     } finally {
@@ -663,9 +540,9 @@ class _MyProfileScreenState extends State<MyProfileScreen>
   Future<void> _removeAvatar() async {
     try {
       setState(() => _isUploadingAvatar = true);
-      final ok =
-      await _updateProfile({'avatar_url': null}, showSnack: false);
-      if (ok) _snack("Profile photo removed.");
+      await _employees.setAvatarUrl(null);
+      await _reloadEmployee();
+      _snack("Profile photo removed.");
     } catch (e) {
       _snack(_friendly(e));
     } finally {
@@ -675,8 +552,7 @@ class _MyProfileScreenState extends State<MyProfileScreen>
 
   // ------------ Upload document (personal) ------------
   Future<void> _uploadDocument() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) {
+    if (AuthService.instance.currentUser == null) {
       _snack("Session expired — please sign in again.");
       return;
     }
@@ -685,31 +561,25 @@ class _MyProfileScreenState extends State<MyProfileScreen>
 
     try {
       setState(() => isLoading = true);
-      final file = File(result.files.single.path!);
-      final fileName = result.files.single.name;
-      final ts = DateTime.now().millisecondsSinceEpoch;
-      // Route to employee-documents/personal/<uid>/ to satisfy RLS policy
-      final path = 'personal/${user.id}/$fileName';
+      final picked = result.files.single;
+      final fileName = picked.name;
 
-      await supabase.storage.from('employee-documents').upload(
-        path,
-        file,
-        fileOptions: const FileOptions(upsert: true),
+      // The file goes through the API into the employee's own documents folder; the
+      // returned `bucket/path` reference is what the document record stores.
+      final uploaded = await _files.upload(
+        bucket: 'employee-documents',
+        bytes: await File(picked.path!).readAsBytes(),
+        fileName: fileName,
       );
-
-      await supabase.from('employee_documents').insert({
-        'employee_id': _emp!['id'],
-        'document_name': fileName,
-        'document_type': 'personal_upload',
-        'file_url': path,
-        'uploaded_by': user.id,
-        'verification_status': 'pending',
-      });
+      await _profile.addDocument(
+        name: fileName,
+        type: 'personal_upload',
+        fileRef: uploaded.ref,
+        size: uploaded.size,
+      );
 
       await _reloadDocuments();
       _snack("Document uploaded successfully");
-    } on StorageException catch (e) {
-      _snack("Upload failed: ${_friendly(e)}");
     } catch (e) {
       _snack("Upload failed: ${_friendly(e)}");
     } finally {
@@ -1671,7 +1541,9 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                       const InputDecoration(labelText: "Employee ID"),
                     ),
                     const SizedBox(height: 12),
+                    // The email is the sign-in identity: only HR can change it, so it is shown read-only.
                     TextField(
+                        enabled: false,
                         controller: email,
                         decoration:
                         const InputDecoration(labelText: "Email")),
@@ -1723,9 +1595,8 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                       Navigator.pop(context);
                       await _updateProfile({
                         'phone': phone.text.trim(),
-                        'email': email.text.trim(),
                         'date_of_birth':
-                        dob == null ? null : dob!.toIso8601String(),
+                        dob == null ? null : DateFormat('yyyy-MM-dd').format(dob!),
                       });
                     },
                     child: const Text("Save")),

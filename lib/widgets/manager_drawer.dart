@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../providers/role_provider.dart';
 import '../screens/dashboard_screen.dart';
-import '../screens/login_screen.dart';
+import '../core/auth/sign_out.dart';
 import '../screens/manager/manager_dashboard_screen.dart';
 import '../screens/manager/pending_approvals_screen.dart';
 import '../screens/manager/manager_benefits_screen.dart';
@@ -428,13 +428,7 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                       color: Colors.redAccent,
                     ),
                   ),
-                  onTap: () {
-                    Navigator.pushAndRemoveUntil(
-                      context,
-                      MaterialPageRoute(builder: (_) => const LoginScreen()),
-                      (route) => false,
-                    );
-                  },
+                  onTap: () => signOutAndShowLogin(context),
                 ),
               ],
             ),

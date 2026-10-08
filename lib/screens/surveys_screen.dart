@@ -1,7 +1,6 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../core/auth/auth_service.dart';
+import '../repositories/engagement_repository.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../widgets/skeleton_layouts.dart';
@@ -32,7 +31,7 @@ class SurveysScreen extends StatefulWidget {
 }
 
 class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProviderStateMixin {
-  final supabase = Supabase.instance.client;
+  final _engagement = EngagementRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
   bool loading = true;
@@ -72,13 +71,12 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
   Future<void> fetchEmployeeAndSurveys() async {
     setState(() { loading = true; errorMsg = null; });
     try {
-      final emp = await supabase.from('employee_records').select().eq('email', widget.userEmail).maybeSingle();
-      if (emp == null) { setState(() { errorMsg = "Employee record not found."; loading = false; }); return; }
-      employeeData = Map<String, dynamic>.from(emp as Map);
-      final orgId = emp['organization_id'];
-      final allSurveysRaw = await supabase.from('surveys').select().eq('organization_id', orgId).eq('status', 'active');
-      final myResponsesRaw = await supabase.from('survey_responses').select('survey_id').eq('employee_id', emp['id']);
-      final completedIds = (myResponsesRaw as List).map((r) => r['survey_id'].toString()).toSet();
+      final me = AuthService.instance.currentUser;
+      if (me == null || (me.employeeId ?? '').isEmpty) { setState(() { errorMsg = "Employee record not found."; loading = false; }); return; }
+      employeeData = {'id': me.employeeId, 'organization_id': me.organizationId};
+      final results = await Future.wait([_engagement.activeSurveys(), _engagement.completedSurveyIds()]);
+      final allSurveysRaw = results[0] as List<Map<String, dynamic>>;
+      final completedIds = results[1] as Set<String>;
       List<Map<String, dynamic>> actives = [];
       List<Map<String, dynamic>> completeds = [];
       if (allSurveysRaw is List) {

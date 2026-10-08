@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../repositories/engagement_repository.dart';
 import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../widgets/refreshable_screen.dart';
@@ -39,7 +39,7 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen>
   String? companyLogoUrl;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
-  final supabase = Supabase.instance.client;
+  final _engagement = EngagementRepository();
   List<Map<String, dynamic>> announcements = [];
 
   @override
@@ -52,12 +52,7 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen>
   @override
   Future<void> loadData() async {
     try {
-      final response = await supabase
-          .from('announcements')
-          .select()
-          .eq('organization_id', widget.organizationId)
-          .eq('is_active', true)
-          .order('created_at', ascending: false);
+      final response = await _engagement.announcements();
 
       List<Map<String, dynamic>> filtered = [];
       if (response is List) {

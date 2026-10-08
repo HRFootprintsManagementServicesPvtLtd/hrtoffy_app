@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
+import '../core/api/api_client.dart';
+import '../repositories/engagement_repository.dart';
 import '../widgets/employee_ui.dart';
 
 class SurveyResponseScreen extends StatefulWidget {
@@ -25,7 +25,7 @@ class SurveyResponseScreen extends StatefulWidget {
 
 class _SurveyResponseScreenState
     extends State<SurveyResponseScreen> {
-final supabase = Supabase.instance.client;
+final _engagement = EngagementRepository();
 
 bool loading = false;
 
@@ -77,19 +77,15 @@ final payload = questions
 )
 .toList();
 
-await supabase.from("survey_responses").insert({
-"survey_id": widget.survey["id"],
-"employee_id": widget.employeeId,
-"responses": payload,
-});
+await _engagement.submitSurveyResponse(widget.survey["id"].toString(), payload);
 
 if (!mounted) return;
 
 Navigator.pop(context, true);
-} on PostgrestException catch (e) {
+} on ApiException catch (e) {
 if (!mounted) return;
 
-if (e.code == "23505") {
+if (e.statusCode == 409) {
 ScaffoldMessenger.of(context).showSnackBar(
 const SnackBar(
 content:

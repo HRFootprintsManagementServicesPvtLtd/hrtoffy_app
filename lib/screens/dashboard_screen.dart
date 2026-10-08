@@ -2,8 +2,15 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:app_badge_plus/app_badge_plus.dart';
+import '../core/api/api_client.dart';
+import '../core/polling.dart';
+import '../repositories/employee_repository.dart';
+import '../repositories/engagement_repository.dart';
+import '../repositories/leave_repository.dart';
+import '../repositories/meal_repository.dart';
+import '../repositories/notification_repository.dart';
+import '../repositories/organization_repository.dart';
 import 'package:intl/intl.dart';
 import 'package:geolocator/geolocator.dart';
 import 'notification.dart';
@@ -45,8 +52,14 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
-  final supabase = Supabase.instance.client;
-  RealtimeChannel? _notificationChannel;
+  final _employees = EmployeeRepository();
+  final _organizations = OrganizationRepository();
+  final _notificationsRepo = NotificationRepository();
+  final _meals = MealRepository();
+  final _engagement = EngagementRepository();
+  final _leaves = LeaveRepository();
+  // No push channel to the app: new notifications are picked up by polling.
+  late final Poller _notificationPoller = Poller(const Duration(seconds: 30), fetchNotifications);
   Map<String, dynamic>? userData;
   Map<String, dynamic>? orgDetails;
   Map<String, dynamic>? mealVoucherState;
@@ -74,34 +87,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _subscribeNotifications();
   }
 
-  void _subscribeNotifications() {
-    _notificationChannel = supabase
-        .channel('notifications_updates')
-        .onPostgresChanges(
-      event: PostgresChangeEvent.insert,
-      schema: 'public',
-      table: 'notifications',
-      callback: (payload) {
-        if (!mounted) return;
-        fetchNotifications();
-      },
-    );
-
-    _notificationChannel!.subscribe();
-  }
+  void _subscribeNotifications() => _notificationPoller.start();
 
   Future<void> _initialize() async {
     setState(() => loadingProfile = true);
     try {
-      final resp = await supabase.from('employee_records').select().eq('email', widget.email.toLowerCase().trim()).maybeSingle();
-      userData = resp;
+      userData = await _employees.getMe();
       if (userData != null) {
         final empId = userData!['id'], orgId = userData!['organization_id'];
         leaveSummaryFuture = LeaveSummaryService.instance.fetch();
 
         todayAttendanceFuture = fetchTodayAttendanceData();
         if (orgId != null) {
-          await Future.wait([fetchMealVoucher(), fetchOrganizationDetails(orgId), fetchCompanyLogo(), _loadGeoFencePolicy()]);
+          // Each part is independent: a failure in one (e.g. the geofence policy, still on its old
+          // data source until the attendance group) must not blank the rest of the dashboard.
+          await Future.wait([
+            fetchMealVoucher().catchError((Object e) => debugPrint('Meal voucher error: $e')),
+            fetchOrganizationDetails(orgId).catchError((Object e) => debugPrint('Organization error: $e')),
+            _loadGeoFencePolicy().catchError((Object e) => debugPrint('Geo policy error: $e')),
+          ]);
         }
         managerName = userData!['manager_name'] ?? '--';
         managerEmail = userData!['manager_email'] ?? '--';
@@ -215,18 +219,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         setState(() => loadingNotifications = true);
       }
 
-      final res = await supabase
-          .from('notifications')
-          .select()
-          .eq('recipient_employee_id', userData!['id'])
-          .order('created_at', ascending: false);
+      final page = await _notificationsRepo.list();
 
       if (!mounted) return;
 
       setState(() {
-        notifications = List<Map<String, dynamic>>.from(res);
-        unreadCount =
-            notifications.where((n) => n['read'] == false).length;
+        notifications = page.items;
+        unreadCount = page.unread;
       });
 
       AppBadgePlus.updateBadge(unreadCount);
@@ -242,29 +241,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> fetchMealVoucher() async {
     final empId = userData?['id'], orgId = userData?['organization_id'];
     if (empId == null || orgId == null) return;
-    final eligibility = await supabase.from('employee_eligibility').select('is_meal_voucher_eligible').eq('employee_id', empId).maybeSingle();
-    if (eligibility?['is_meal_voucher_eligible'] != true) return;
-    final config = await supabase.from('meal_voucher_configuration').select().eq('organization_id', orgId).maybeSingle();
-    if (config == null) return;
     final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
-    final orders = await supabase.from('meal_orders').select().eq('employee_id', empId).eq('order_date', today).neq('status', 'cancelled').limit(1);
-    setState(() { showMealVoucher = true; mealVoucherState = {'amount': config['per_meal_amount'], 'cutoff_hours': config['order_cutoff_hours'] ?? 6, 'order': orders.isNotEmpty ? orders.first : null}; });
+    final state = await _meals.today(today);
+    if (!mounted) return;
+    if (state == null) return;
+    setState(() { showMealVoucher = true; mealVoucherState = {'amount': state.amount, 'cutoff_hours': state.cutoffHours, 'order': state.order}; });
   }
 
   Future<void> placeMealOrder() async {
-    final res = await supabase.rpc('place_meal_order', params: {'p_employee_id': userData?['id'], 'p_organization_id': userData?['organization_id']});
-    if (res?['success'] == true) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ Meal ordered successfully'))); await fetchMealVoucher(); }
+    try {
+      final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      if (await _meals.placeOrder(today)) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ Meal ordered successfully')));
+        await fetchMealVoucher();
+      }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.red));
+    }
   }
 
-  Future<void> fetchOrganizationDetails(String id) async { final org = await supabase.from('organizations').select().eq('id', id).maybeSingle(); setState(() { orgDetails = org; organizationName = org?['name'] ?? '--'; }); }
-  Future<void> fetchCompanyLogo() async { final orgId = userData?['organization_id']; final orgResp = await supabase.from('organizations').select('logo_url').eq('id', orgId).maybeSingle(); if (orgResp?['logo_url'] != null) setState(() => companyLogoUrl = orgResp!['logo_url']); }
-  Future<void> fetchManagerData(String email) async { final resp = await supabase.from('employee_records').select().eq('email', email).maybeSingle(); if (resp != null) setState(() { managerName = resp['full_name'] ?? '--'; managerEmail = resp['email'] ?? '--'; }); }
+  // One organization fetch fills the name, the full org map and the logo (the old code made three calls).
+  Future<void> fetchOrganizationDetails(String id) async {
+    final org = await _organizations.getOrganization();
+    if (!mounted) return;
+    setState(() {
+      orgDetails = org;
+      organizationName = org['name'] ?? '--';
+      if (org['logo_url'] != null) companyLogoUrl = org['logo_url'];
+    });
+  }
+
+  Future<void> fetchManagerData(String email) async {
+    try {
+      final resp = await _employees.getByEmail(email);
+      if (mounted) setState(() { managerName = resp['full_name'] ?? '--'; managerEmail = resp['email'] ?? '--'; });
+    } on ApiException catch (e) {
+      debugPrint('Manager lookup failed: $e');
+    }
+  }
 
   @override
   void dispose() {
-    if (_notificationChannel != null) {
-      supabase.removeChannel(_notificationChannel!);
-    }
+    _notificationPoller.stop();
     super.dispose();
   }
 
@@ -396,8 +416,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       final empId = userData?['id'], orgId = userData?['organization_id'];
       if (empId == null || orgId == null) return {"error": "Missing info"};
-      final results = await Future.wait([supabase.from('employee_records').select().eq('id', empId).maybeSingle(), supabase.from('organizations').select().eq('id', orgId).maybeSingle(), supabase.from('announcements').select().eq('organization_id', orgId).order('created_at', ascending: false), supabase.from('leave_balances').select().eq('employee_id', empId), supabase.from('leave_applications').select().eq('employee_id', empId).order('created_at', ascending: false), supabase.from('notifications').select().eq('recipient_employee_id', empId).order('created_at', ascending: false), supabase.from('attendance_punch_logs').select().eq('employee_id', empId).order('punch_time', ascending: true)]);
-      return {"employee_profile": results[0], "organization_details": results[1], "announcements": results[2] ?? [], "leave_balances": results[3] ?? [], "leave_applications": results[4] ?? [], "notifications": results[5] ?? [], "attendance_punch_logs": results[6] ?? []};
+      // Snapshot used as context for the Toffy assistant. Leave balances / applications come from the API
+      // (best effort: a failure leaves just that list empty); punch logs are added back when the attendance
+      // group moves to the API.
+      final results = await Future.wait([_employees.getMe(), _organizations.getOrganization(), _engagement.announcements(), _notificationsRepo.list()]);
+      var leaveBalances = <Map<String, dynamic>>[];
+      var leaveApplications = <Map<String, dynamic>>[];
+      try {
+        leaveBalances = [for (final b in await _leaves.balances()) {'leave_type': b.name, 'allocated_days': b.allocated, 'used_days': b.used, 'remaining_days': b.remaining, 'year': b.year}];
+      } catch (_) {}
+      try {
+        leaveApplications = (await _leaves.historyPage(limit: 50)).items;
+      } catch (_) {}
+      return {"employee_profile": results[0], "organization_details": results[1], "announcements": results[2], "leave_balances": leaveBalances, "leave_applications": leaveApplications, "notifications": (results[3] as NotificationPage).items, "attendance_punch_logs": []};
     } catch (e) { return {"error": e.toString()}; }
   }
 }

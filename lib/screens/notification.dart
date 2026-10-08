@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../repositories/notification_repository.dart';
 import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import '../widgets/refreshable_screen.dart';
 import '../widgets/skeleton_layouts.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/drawer_route.dart';
@@ -32,7 +31,7 @@ class NotificationsScreen extends StatefulWidget {
 }
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
-  final supabase = Supabase.instance.client;
+  final _notificationsRepo = NotificationRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
   List<Map<String, dynamic>> notifications = [];
@@ -47,8 +46,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Future<void> fetchNotifications() async {
     try {
       setState(() => loading = true);
-      final res = await supabase.from('notifications').select().eq('recipient_employee_id', widget.employeeId).order('created_at', ascending: false);
-      setState(() { notifications = res != null ? List<Map<String, dynamic>>.from(res) : []; loading = false; });
+      final page = await _notificationsRepo.list();
+      setState(() { notifications = page.items; loading = false; });
     } catch (e) {
       setState(() => loading = false);
     }

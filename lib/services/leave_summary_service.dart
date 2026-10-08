@@ -1,13 +1,14 @@
 // Single source of truth for the "leave summary" numbers shown on the
 // Dashboard leave-balance card and on the Leave screen summary cards.
 //
-// It wraps the get_my_leave_summary() SECURITY DEFINER RPC (added to
-// bypass the RLS chain that was causing 57014 timeouts) and normalises
-// the response into a shape both screens can consume without duplicating
-// business logic.
+// It reads the signed-in employee's balances and pending requests from the
+// HR Toffy API (see LeaveRepository) and normalises them into a shape both
+// screens can consume without duplicating business logic.
 
 import 'package:flutter/foundation.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../core/api/json_case.dart';
+import '../repositories/leave_repository.dart';
 
 class LeaveSummaryPolicy {
   final String name;
@@ -53,50 +54,56 @@ class LeaveSummary {
 }
 
 class LeaveSummaryService {
-  LeaveSummaryService._();
+  LeaveSummaryService._() : _injected = null;
+
+  /// For tests: a service that reads through [repository].
+  @visibleForTesting
+  LeaveSummaryService.withRepository(LeaveRepository repository) : _injected = repository;
+
   static final LeaveSummaryService instance = LeaveSummaryService._();
 
-  final SupabaseClient _supabase = Supabase.instance.client;
+  final LeaveRepository? _injected;
+  LeaveRepository? _lazy;
+
+  /// Created on first use: the repository needs a signed-in session.
+  LeaveRepository get _repo => _injected ?? (_lazy ??= LeaveRepository());
 
   Future<LeaveSummary> fetch({int? year}) async {
     final currentYear = year ?? DateTime.now().year;
     try {
-      final res = await _supabase.rpc(
-        'get_my_leave_summary',
-        params: {'_year': currentYear},
-      );
-      if (res == null) return LeaveSummary.empty(currentYear);
+      final balances = await _repo.balances(year: currentYear);
+      // A failing pending count must not blank the balances.
+      var pending = 0;
+      try {
+        pending = await _repo.pendingCount();
+      } catch (e) {
+        debugPrint('LeaveSummaryService pending count error: $e');
+      }
 
-      final data = Map<String, dynamic>.from(res as Map);
-      final balancesRes = (data['balances'] as List?) ?? const [];
-      final policiesRes = (data['types'] as List?) ?? const [];
-      final pendingCount = (data['pending'] as num?)?.toInt() ?? 0;
-
-      final leaveTypeMap = <String, Map<String, dynamic>>{
-        for (final p in policiesRes)
-          (p as Map)['id'].toString(): Map<String, dynamic>.from(p),
-      };
-
+      // One entry per policy name (same as before: duplicates collapse).
       final Map<String, LeaveSummaryPolicy> policyMap = {};
 
-      if (balancesRes.isNotEmpty) {
-        for (final b in balancesRes) {
-          final row = Map<String, dynamic>.from(b as Map);
-          final policy = leaveTypeMap[row['leave_type_id']?.toString()];
-          final pName = (policy?['name'] ?? 'Unnamed Policy').toString();
-          final pDays = (policy?['days_allowed'] ?? 0);
-          policyMap[pName] = LeaveSummaryPolicy(
-            name: pName,
-            allocated: ((row['allocated_days'] ?? pDays) as num).toInt(),
-            used: ((row['used_days'] ?? 0) as num).toInt(),
-            remaining: ((row['remaining_days'] ?? 0) as num).toInt(),
+      if (balances.isNotEmpty) {
+        for (final b in balances) {
+          final name = b.name.isEmpty ? 'Unnamed Policy' : b.name;
+          policyMap[name] = LeaveSummaryPolicy(
+            name: name,
+            allocated: b.allocated.toInt(),
+            used: b.used.toInt(),
+            remaining: b.remaining.toInt(),
           );
         }
       } else {
-        for (final p in policiesRes) {
-          final row = Map<String, dynamic>.from(p as Map);
+        // No balance rows yet: show what the organisation's leave policies would give.
+        List<Map<String, dynamic>> policies = const [];
+        try {
+          policies = await _repo.policies(year: currentYear);
+        } catch (e) {
+          debugPrint('LeaveSummaryService policies error: $e');
+        }
+        for (final row in policies) {
           final name = (row['name'] ?? 'Unnamed Policy').toString();
-          final days = ((row['days_allowed'] ?? 0) as num).toInt();
+          final days = asInt(row['days_allowed']);
           policyMap[name] = LeaveSummaryPolicy(
             name: name,
             allocated: days,
@@ -117,7 +124,7 @@ class LeaveSummaryService {
         totalAllocated: a,
         totalUsed: u,
         totalRemaining: r,
-        pendingRequests: pendingCount,
+        pendingRequests: pending,
         leavePolicyCount: policyMap.length,
         year: currentYear,
         policies: policyMap.values.toList(),

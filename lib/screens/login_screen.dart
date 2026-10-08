@@ -9,6 +9,9 @@ import 'otp_password_reset_dialog.dart';
 import 'forgot_password_dialog.dart';
 import '../widgets/employee_ui.dart';
 import 'package:uuid/uuid.dart';
+import '../core/api/api_client.dart';
+import '../core/auth/auth_service.dart';
+import '../core/feature_flags.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({Key? key}) : super(key: key);
@@ -28,7 +31,54 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false, _obscurePassword = true;
   String? _error;
 
+  /// AWS-backend password login (enabled with --dart-define=USE_AWS_AUTH=true).
+  /// Signs in via /auth/login, then routes on the role from /auth/resolve-user.
+  Future<AuthOrganization?> _pickOrganization(List<AuthOrganization> orgs) {
+    return showDialog<AuthOrganization>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text("Select organization"),
+        children: [
+          for (final o in orgs)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, o),
+              child: Text(o.name.isEmpty ? o.id : o.name),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _loginWithAws({String? organizationId}) async {
+    setState(() { _isLoading = true; _error = null; });
+    try {
+      final user = await AuthService.instance.login(_emailController.text, _passwordController.text.trim(), organizationId: organizationId);
+      if ((user.employeeId ?? '').isEmpty) { setState(() => _error = "Employee not found"); return; }
+      await Geolocator.requestPermission();
+      // FCM token registration is skipped here: it writes to Supabase, and the
+      // AWS backend has no FCM-token endpoint yet.
+      if (!mounted) return;
+      if (user.isManager) {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => ManagerDashboardScreen(userEmail: user.email)));
+      } else {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(email: user.email, employeeId: user.employeeId!)));
+      }
+    } on MultipleOrganizationsException catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      final picked = await _pickOrganization(e.organizations);
+      if (picked != null) await _loginWithAws(organizationId: picked.id);
+    } on AuthFlowException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.isNetworkError ? "Network error. Please try again." : (e.isUnauthorized ? "Invalid credentials" : e.message));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   Future<void> _login() async {
+    if (FeatureFlags.useAwsAuth) return _loginWithAws();
     setState(() { _isLoading = true; _error = null; });
     try {
       final response = await Supabase.instance.client.auth.signInWithPassword(email: _emailController.text.trim(), password: _passwordController.text.trim());

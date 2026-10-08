@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'login_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../main.dart';
+import '../core/auth/auth_service.dart';
+import '../core/feature_flags.dart';
 import 'dashboard_screen.dart';
 
 class GifSplashScreen extends StatefulWidget {
@@ -39,7 +41,32 @@ class _GifSplashScreenState extends State<GifSplashScreen>
     Future.delayed(const Duration(seconds: 1), _routeNext);
   }
 
+  /// AWS session path: the session was already restored in main(); route using
+  /// the identity resolved from /auth/resolve-user (no Supabase lookups).
+  Future<void> _routeNextAws() async {
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
+
+    final user = AuthService.instance.currentUser;
+    final employeeId = user?.employeeId ?? '';
+    if (user == null || employeeId.isEmpty) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+      );
+      return;
+    }
+    // FCM token registration moves to the AWS backend in the push group.
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DashboardScreen(email: user.email, employeeId: employeeId),
+      ),
+    );
+  }
+
   Future<void> _routeNext() async {
+    if (FeatureFlags.useAwsAuth) return _routeNextAws();
     final supabase = Supabase.instance.client;
 
     // Give Supabase a moment to restore session

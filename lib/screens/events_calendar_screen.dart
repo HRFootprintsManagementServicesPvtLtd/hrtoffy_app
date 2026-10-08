@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../core/auth/auth_service.dart';
+import '../repositories/engagement_repository.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../widgets/refreshable_screen.dart';
 import '../widgets/skeleton_layouts.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/drawer_route.dart';
@@ -32,7 +31,7 @@ class EventsCalendarScreen extends StatefulWidget {
 }
 
 class _EventsCalendarScreenState extends State<EventsCalendarScreen> with TickerProviderStateMixin {
-  final supabase = Supabase.instance.client;
+  final _engagement = EngagementRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
   Map<DateTime, List<dynamic>> _eventsByDate = {};
@@ -57,18 +56,20 @@ class _EventsCalendarScreenState extends State<EventsCalendarScreen> with Ticker
   Future<void> _fetchAllEvents() async {
     setState(() => loading = true);
     try {
-      final emp = await supabase.from('employee_records').select('id, organization_id').eq('email', widget.email).maybeSingle();
-      if (emp == null) throw Exception("User not found");
-      _employeeId = emp['id'].toString();
-      final orgId = emp['organization_id'];
-      final events = await supabase.from('events').select().eq('organization_id', orgId).order('event_date', ascending: true);
+      final me = AuthService.instance.requireUser();
+      _employeeId = (me.employeeId ?? '').toString();
+      final events = await _engagement.events();
       Map<DateTime, List<dynamic>> byDate = {};
       for (final e in events) {
-        DateTime d = DateTime.tryParse(e['event_date']) ?? DateTime.now();
+        DateTime d = DateTime.tryParse((e['event_date'] ?? '').toString()) ?? DateTime.now();
         DateTime key = DateTime(d.year, d.month, d.day);
         byDate.putIfAbsent(key, () => []).add(e);
       }
-      final created = (events ?? []).where((e) => (e['created_by'] ?? '').toString() == _employeeId).toList();
+      // The backend records the creator as the USER id; older rows carry the employee id: accept both.
+      final created = events.where((e) {
+        final by = (e['created_by'] ?? '').toString();
+        return by.isNotEmpty && (by == _employeeId || by == me.id);
+      }).toList();
       setState(() {
         _eventsByDate = byDate;
         createdEvents = created.map((e) => Map<String, dynamic>.from(e)).toList();

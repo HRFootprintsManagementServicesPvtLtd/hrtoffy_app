@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../repositories/engagement_repository.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../widgets/skeleton_layouts.dart';
@@ -31,7 +31,7 @@ class FaqsScreen extends StatefulWidget {
 }
 
 class _FaqsScreenState extends State<FaqsScreen> {
-  final supabase = Supabase.instance.client;
+  final _engagement = EngagementRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
   List<Map<String, dynamic>> faqs = [];
@@ -49,13 +49,17 @@ class _FaqsScreenState extends State<FaqsScreen> {
 
   Future<void> fetchFaqs() async {
     setState(() => loading = true);
-    final results = await supabase.from('faqs').select().eq('organization_id', widget.organizationId)
-        .eq('is_active', true).order('category').order('created_at', ascending: false);
-
-    setState(() {
-      faqs = (results as List<dynamic>).map((faq) => Map<String, dynamic>.from(faq)).toList();
-      loading = false;
-    });
+    try {
+      final results = await _engagement.faqs();
+      if (!mounted) return;
+      setState(() {
+        faqs = results;
+        loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => loading = false);
+    }
   }
 
   Widget _circleIconBtn({required String icon, required VoidCallback onTap}) {
