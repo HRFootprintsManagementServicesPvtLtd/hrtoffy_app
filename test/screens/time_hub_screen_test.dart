@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hrms_app/providers/role_provider.dart';
 import 'package:hrms_app/repositories/approvals_repository.dart';
+import 'package:hrms_app/repositories/coff_repository.dart';
 import 'package:hrms_app/repositories/manager_attendance_repository.dart';
 import 'package:hrms_app/repositories/manager_repository.dart';
 import 'package:hrms_app/screens/manager/time_hub_screen.dart';
+import 'package:hrms_app/screens/manager/widgets/coff_approvals_panel.dart';
 import 'package:hrms_app/screens/manager/widgets/leave_approvals_panel.dart';
 import 'package:hrms_app/screens/manager/widgets/manager_state_views.dart';
 import 'package:hrms_app/screens/manager/widgets/overtime_approvals_panel.dart';
@@ -42,6 +44,7 @@ Widget _hub(TestSession s) => ChangeNotifierProvider<RoleProvider>(
       managerRepository: ManagerRepository(auth: s.auth),
       attendanceRepository: ManagerAttendanceRepository(auth: s.auth),
       approvalsRepository: ApprovalsRepository(auth: s.auth),
+      coffRepository: CoffRepository(auth: s.auth),
       now: () => _now,
     ),
   ),
@@ -58,6 +61,8 @@ Future<TestSession> _session({bool holidaysFail = false}) => signedIn((
     case '$_org/attendance/regularization-requests':
       return ok({'requests': []});
     case '$_org/attendance/overtime/approvable':
+      return ok([]);
+    case '$_org/leaves/coff-requests':
       return ok([]);
     case '$_org/holidays':
       if (holidaysFail) {
@@ -92,7 +97,7 @@ Future<void> _openTab(WidgetTester t, String name) async {
 
 void main() {
   testWidgets(
-    'tabs: Attendance, Leave, Regularization, Overtime, Holidays; no C-Off',
+    'tabs: Attendance, Leave, Regularization, Overtime, C-Off, Holidays',
     (tester) async {
       _tall(tester);
       final s = await _session();
@@ -103,13 +108,12 @@ void main() {
         'Leave',
         'Regularization',
         'Overtime',
+        'C-Off',
         'Holidays',
       ]);
       for (final t in kTimeHubTabs) {
         expect(find.widgetWithText(Tab, t), findsOneWidget, reason: t);
       }
-      expect(find.textContaining('C-Off'), findsNothing);
-      expect(find.textContaining('Comp'), findsNothing);
       // Attendance is the first tab and loads the team.
       expect(find.text('Attendance, every punch counted'), findsOneWidget);
       expect(_paths(s), contains('$_org/employees'));
@@ -134,6 +138,10 @@ void main() {
     await _openTab(tester, 'Overtime');
     expect(find.byType(OvertimeApprovalsPanel), findsOneWidget);
     expect(_paths(s), contains('$_org/attendance/overtime/approvable'));
+
+    await _openTab(tester, 'C-Off');
+    expect(find.byType(CoffApprovalsPanel), findsOneWidget);
+    expect(_paths(s), contains('$_org/leaves/coff-requests'));
 
     await _openTab(tester, 'Holidays');
     expect(_paths(s), contains('$_org/holidays'));

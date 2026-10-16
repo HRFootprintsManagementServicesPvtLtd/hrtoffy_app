@@ -4,25 +4,25 @@ import 'package:intl/intl.dart';
 
 import '../../core/manager_access.dart';
 import '../../repositories/approvals_repository.dart';
+import '../../repositories/coff_repository.dart';
 import '../../repositories/manager_attendance_repository.dart';
 import '../../repositories/manager_repository.dart';
 import '../../widgets/drawer_route.dart';
 import '../../widgets/manager_drawer.dart';
 import 'team_attendance_screen.dart';
+import 'widgets/coff_approvals_panel.dart';
 import 'widgets/leave_approvals_panel.dart';
 import 'widgets/manager_state_views.dart';
 import 'widgets/overtime_approvals_panel.dart';
 import 'widgets/regularization_approvals_panel.dart';
 
 /// The tabs of the manager Time hub, in order (the website's TimeLeaveHub for a manager).
-///
-/// There is deliberately no C-Off tab: the server has no manager list route for compensatory-off requests yet. It is
-/// part of the backend proposal; add the tab here once that route exists.
 const List<String> kTimeHubTabs = [
   'Attendance',
   'Leave',
   'Regularization',
   'Overtime',
+  'C-Off',
   'Holidays',
 ];
 
@@ -38,6 +38,7 @@ class TimeHubScreen extends StatefulWidget {
   final ManagerRepository? managerRepository;
   final ManagerAttendanceRepository? attendanceRepository;
   final ApprovalsRepository? approvalsRepository;
+  final CoffRepository? coffRepository;
 
   /// The current time (tests pass a fixed one).
   final DateTime Function()? now;
@@ -50,6 +51,7 @@ class TimeHubScreen extends StatefulWidget {
     this.managerRepository,
     this.attendanceRepository,
     this.approvalsRepository,
+    this.coffRepository,
     this.now,
   });
 
@@ -66,6 +68,7 @@ class _TimeHubScreenState extends State<TimeHubScreen>
   );
   late final ApprovalsRepository _approvals =
       widget.approvalsRepository ?? ApprovalsRepository();
+  late final CoffRepository _coff = widget.coffRepository ?? CoffRepository();
   late final ManagerAttendanceRepository _attendance =
       widget.attendanceRepository ?? ManagerAttendanceRepository();
 
@@ -142,6 +145,7 @@ class _TimeHubScreenState extends State<TimeHubScreen>
             onBack: _toFirstTab,
           ),
           OvertimeApprovalsPanel(repository: _approvals, onBack: _toFirstTab),
+          CoffApprovalsPanel(repository: _coff),
           _HolidaysTab(repository: _attendance, now: widget.now),
         ],
       ),
