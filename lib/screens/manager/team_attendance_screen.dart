@@ -34,8 +34,12 @@ class TeamAttendanceScreen extends StatefulWidget {
   /// The current time (tests pass a fixed one).
   final DateTime Function()? now;
 
+  /// True when shown as a tab of the Time hub: no Scaffold, app bar or drawer of its own (the hub provides them).
+  final bool embedded;
+
   const TeamAttendanceScreen({
     super.key,
+    this.embedded = false,
     required this.userEmail,
     required this.userData,
     required this.fetchHrmsContext,
@@ -310,6 +314,7 @@ class _TeamAttendanceScreenState extends State<TeamAttendanceScreen>
 
   @override
   Widget build(BuildContext context) {
+    if (widget.embedded) return _buildBody();
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: const Color(0xFFF7F8FC),
@@ -332,37 +337,41 @@ class _TeamAttendanceScreenState extends State<TeamAttendanceScreen>
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: SingleChildScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildPageHeader(),
-              const SizedBox(height: 24),
-              const AskToffyCard(),
-              const SizedBox(height: 24),
-              if (_teamReady) ...[
-                _buildDayBar(),
-                const SizedBox(height: 16),
-                _buildLargeKpiCards(),
-                const SizedBox(height: 32),
-              ] else
-                const SizedBox(height: 16),
-              _buildManagerPanelHeader(),
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildPageHeader(),
+            const SizedBox(height: 24),
+            const AskToffyCard(),
+            const SizedBox(height: 24),
+            if (_teamReady) ...[
+              _buildDayBar(),
               const SizedBox(height: 16),
-              _buildPanelTabs(),
-              const SizedBox(height: 24),
-              if (_teamReady) ...[
-                _buildSmallKpiGrid(),
-                const SizedBox(height: 32),
-              ],
-              _buildTabContent(),
-              const SizedBox(height: 50),
+              _buildLargeKpiCards(),
+              const SizedBox(height: 32),
+            ] else
+              const SizedBox(height: 16),
+            _buildManagerPanelHeader(),
+            const SizedBox(height: 16),
+            _buildPanelTabs(),
+            const SizedBox(height: 24),
+            if (_teamReady) ...[
+              _buildSmallKpiGrid(),
+              const SizedBox(height: 32),
             ],
-          ),
+            _buildTabContent(),
+            const SizedBox(height: 50),
+          ],
         ),
       ),
     );

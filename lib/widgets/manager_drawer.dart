@@ -16,7 +16,7 @@ import '../screens/manager/manager_engage_screen.dart';
 import '../screens/manager/manager_compliance_screen.dart';
 import 'drawer_route.dart';
 
-import '../screens/manager/team_attendance_screen.dart';
+import '../screens/manager/time_hub_screen.dart';
 
 import 'employee_ui.dart';
 import 'dart:math' as math;
@@ -231,7 +231,7 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => managerScreenFor(ManagerFeature.teamAttendance, () => TeamAttendanceScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.teamAttendance, () => TimeHubScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,
