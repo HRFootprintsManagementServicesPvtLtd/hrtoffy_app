@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import '../core/avatar.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import '../providers/role_provider.dart';
+import '../core/manager_access.dart';
 import '../screens/dashboard_screen.dart';
 import '../core/auth/sign_out.dart';
 import '../screens/manager/manager_dashboard_screen.dart';
@@ -43,73 +44,15 @@ class ManagerDrawer extends StatefulWidget {
 }
 
 class _ManagerDrawerState extends State<ManagerDrawer> {
-  int totalApprovals = 0;
-  final supabase = Supabase.instance.client;
   bool showOrgLogo = false;
 
   @override
   void initState() {
     super.initState();
-    _fetchTotalApprovals();
     // Show Org Logo immediately if available
     showOrgLogo = true;
   }
 
-  Future<void> _fetchTotalApprovals() async {
-    try {
-      final managerId = widget.userData['id'];
-      if (managerId == null) return;
-
-      List<String> teamIds = [];
-      try {
-        final hierarchy = await supabase.rpc('get_manager_full_hierarchy', params: {'p_manager_id': managerId});
-        if (hierarchy is List) {
-          teamIds = hierarchy.map((i) => (i is Map ? i['id'] : i).toString()).toList();
-        }
-      } catch (_) {
-        teamIds = [managerId.toString()];
-      }
-
-      debugPrint("ManagerDrawer: Fetching total approvals for ${teamIds.length} team members...");
-      
-      int count = 0;
-      
-      // Execute sequentially to avoid overloading and hitting aggregate timeout
-      final tables = [
-        {'name': 'leave_applications', 'statusCol': 'status', 'statusVal': 'pending'},
-        {'name': 'attendance_regularization_requests', 'statusCol': 'status', 'statusVal': 'pending'},
-        {'name': 'benefit_claims', 'statusCol': 'status', 'statusVal': 'pending'},
-        {'name': 'loans_advances', 'statusCol': 'status', 'statusVal': 'pending'},
-        {'name': 'travel_claims', 'statusCol': 'status', 'statusVal': 'pending'},
-        {'name': 'support_requests', 'statusCol': 'status', 'statusVal': 'open'},
-      ];
-
-      for (var table in tables) {
-        try {
-          final res = await supabase
-              .from(table['name']!)
-              .select('id')
-              .inFilter('employee_id', teamIds)
-              .eq(table['statusCol']!, table['statusVal']!)
-              .limit(50); // Cap per table for the badge count speed
-          
-          if (res is List) {
-            count += res.length;
-          }
-        } catch (e) {
-          debugPrint("Error counting ${table['name']}: $e");
-        }
-      }
-      
-      debugPrint("ManagerDrawer: Total approvals counted: $count");
-
-      if (mounted) {
-        setState(() => totalApprovals = count);
-      }
-    } catch (e) {
-      debugPrint("Error fetching drawer approval count: $e");
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -177,12 +120,12 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                   const SizedBox(height: 18),
                   Row(
                     children: [
-                      if (widget.userData['avatar_url'] != null)
+                      if (cleanAvatarUrl(widget.userData['avatar_url']) != null)
                         Padding(
                           padding: const EdgeInsets.only(right: 12),
                           child: CircleAvatar(
                             radius: 22,
-                            backgroundImage: NetworkImage(widget.userData['avatar_url']),
+                            backgroundImage: NetworkImage(cleanAvatarUrl(widget.userData['avatar_url'])!),
                           ),
                         )
                       else
@@ -248,11 +191,11 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ManagerDashboardScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.dashboard, () => ManagerDashboardScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,
-                        ),
+                        )),
                       ),
                     );
                   },
@@ -261,15 +204,15 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                   icon: Icons.check_circle_outline_rounded,
                   label: "Approvals",
                   route: DrawerRoute.approvals,
-                  badgeCount: totalApprovals > 0 ? totalApprovals : null,
+                  badgeUnavailable: true, // no verified approvals-count source yet: neutral "unknown", never a misleading 0
                   onTap: () {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => PendingApprovalsScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.approvals, () => PendingApprovalsScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
-                        ),
+                        )),
                       ),
                     );
                   },
@@ -288,11 +231,11 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => TeamAttendanceScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.teamAttendance, () => TeamAttendanceScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,
-                        ),
+                        )),
                       ),
                     );
                   },
@@ -305,11 +248,11 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ManagerBenefitsScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.benefits, () => ManagerBenefitsScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,
-                        ),
+                        )),
                       ),
                     );
                   },
@@ -322,11 +265,11 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ManagerLoansScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.loans, () => ManagerLoansScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,
-                        ),
+                        )),
                       ),
                     );
                   },
@@ -339,11 +282,11 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ManagerExpensesScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.expenses, () => ManagerExpensesScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,
-                        ),
+                        )),
                       ),
                     );
                   },
@@ -356,11 +299,11 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ManagerTravelScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.travel, () => ManagerTravelScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,
-                        ),
+                        )),
                       ),
                     );
                   },
@@ -373,11 +316,11 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ManagerEngageScreen(
+                        builder: (_) => managerScreenFor(ManagerFeature.engage, () => ManagerEngageScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,
-                        ),
+                        )),
                       ),
                     );
                   },
@@ -444,6 +387,7 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
     required DrawerRoute? route,
     required VoidCallback onTap,
     int? badgeCount,
+    bool badgeUnavailable = false,
     bool hasDropdown = false,
   }) {
     final isSelected = widget.currentRoute == route;
@@ -471,7 +415,16 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
             color: isSelected ? const Color(0xFF1E90FF) : Colors.black87,
           ),
         ),
-        trailing: badgeCount != null
+        trailing: badgeUnavailable
+            ? Tooltip(
+                message: "Approval count isn't available yet",
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(10)),
+                  child: const Text("-", style: TextStyle(color: Colors.black54, fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+              )
+            : badgeCount != null
             ? Container(
                 padding: const EdgeInsets.all(6),
                 decoration: const BoxDecoration(

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import '../core/api/api_client.dart';
 import '../core/auth/auth_service.dart';
 import '../repositories/engagement_repository.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -19,11 +21,17 @@ class SurveysScreen extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
 
+  /// Tests only: the repository and session to use (default to the signed-in session's).
+  final EngagementRepository? repository;
+  final AuthService? auth;
+
   const SurveysScreen({
     Key? key,
     required this.userEmail,
     required this.userData,
     required this.fetchHrmsContext,
+    this.repository,
+    this.auth,
   }) : super(key: key);
 
   @override
@@ -31,7 +39,7 @@ class SurveysScreen extends StatefulWidget {
 }
 
 class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProviderStateMixin {
-  final _engagement = EngagementRepository();
+  late final EngagementRepository _engagement = widget.repository ?? EngagementRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
   bool loading = true;
@@ -39,6 +47,13 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
   Map<String, dynamic>? employeeData;
   List<Map<String, dynamic>> activeSurveys = [];
   List<Map<String, dynamic>> completedSurveys = [];
+
+  /// True when the answered-or-not lookup failed for at least one survey. Those surveys stay in Active (the server
+  /// refuses a second submission with 409) and none of them is shown as completed.
+  bool completionUnknown = false;
+
+  /// Survey id -> when the employee submitted it (as the server reported it), for the completed ones.
+  Map<String, String?> submittedAt = const {};
 
 
   final List<Color> pastelColors = [
@@ -68,26 +83,52 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
     super.dispose();
   }
 
+  /// A short message for the user; never the raw exception text.
+  String _friendlyError(Object e) {
+    if (e is ApiException) {
+      if (e.isNetworkError) return 'Network problem. Check your connection and retry.';
+      if (e.isUnauthorized) return 'Session expired. Please sign in again.';
+      if (e.isForbidden) return "You don't have permission to view surveys.";
+      if (e.isServerError) return 'The server is busy right now. Please try again.';
+    }
+    return "We couldn't load surveys right now. Please try again.";
+  }
+
   Future<void> fetchEmployeeAndSurveys() async {
-    setState(() { loading = true; errorMsg = null; });
+    setState(() { loading = true; errorMsg = null; completionUnknown = false; });
     try {
-      final me = AuthService.instance.currentUser;
+      final me = (widget.auth ?? AuthService.instance).currentUser;
       if (me == null || (me.employeeId ?? '').isEmpty) { setState(() { errorMsg = "Employee record not found."; loading = false; }); return; }
       employeeData = {'id': me.employeeId, 'organization_id': me.organizationId};
-      final results = await Future.wait([_engagement.activeSurveys(), _engagement.completedSurveyIds()]);
-      final allSurveysRaw = results[0] as List<Map<String, dynamic>>;
-      final completedIds = results[1] as Set<String>;
-      List<Map<String, dynamic>> actives = [];
-      List<Map<String, dynamic>> completeds = [];
-      if (allSurveysRaw is List) {
-        for (final surveyRaw in allSurveysRaw) {
-          final survey = Map<String, dynamic>.from(surveyRaw);
-          if (completedIds.contains(survey['id'].toString())) completeds.add(survey);
-          else actives.add(survey);
+      // The surveys come first; which of them the employee already answered is asked per survey afterwards. A failed
+      // lookup only makes THAT survey's completion unknown: it stays in Active (never shown as completed) and the
+      // screen says so, while the surveys that were answered are still shown as completed.
+      final surveys = (await _engagement.mySurveys()).map((s) => Map<String, dynamic>.from(s)).toList();
+      final completion = surveys.isEmpty
+          ? const SurveyCompletion(submittedAt: {}, unknown: {})
+          : await _engagement.surveyCompletion(surveys.map((s) => s['id'].toString()));
+      final actives = <Map<String, dynamic>>[];
+      final completeds = <Map<String, dynamic>>[];
+      for (final survey in surveys) {
+        if (completion.isCompleted(survey['id'].toString())) {
+          completeds.add(survey);
+        } else {
+          actives.add(survey);
         }
       }
-      setState(() { activeSurveys = actives; completedSurveys = completeds; loading = false; });
-    } catch (e) { setState(() { errorMsg = e.toString(); loading = false; }); }
+      if (!mounted) return;
+      setState(() {
+        activeSurveys = actives;
+        completedSurveys = completeds;
+        submittedAt = completion.submittedAt;
+        completionUnknown = completion.unknown.isNotEmpty;
+        loading = false;
+      });
+    } catch (e) {
+      debugPrint('fetchEmployeeAndSurveys error: $e');
+      if (!mounted) return;
+      setState(() { errorMsg = _friendlyError(e); loading = false; });
+    }
   }
 
   Widget _circleIconBtn({required String icon, required VoidCallback onTap}) {
@@ -181,11 +222,18 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
             ),
           ),
           SliverFillRemaining(
-            child: loading ? const SkeletonAnnouncements() : TabBarView(
-              controller: _tabController,
+            child: loading ? const SkeletonAnnouncements() : errorMsg != null ? _buildError() : Column(
               children: [
-                _buildSurveyList(activeSurveys, true),
-                _buildSurveyList(completedSurveys, false),
+                if (completionUnknown) _buildUnknownCompletionNotice(),
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      _buildSurveyList(activeSurveys, true),
+                      completionUnknown && completedSurveys.isEmpty ? _buildCompletedUnavailable() : _buildSurveyList(completedSurveys, false),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -214,6 +262,51 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
           BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/payroll.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Payslip'),
           BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/menu.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'More'),
         ],
+      ),
+    );
+  }
+
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(errorMsg!, textAlign: TextAlign.center, style: GoogleFonts.montserrat(color: Colors.black54)),
+            const SizedBox(height: 12),
+            ElevatedButton(onPressed: fetchEmployeeAndSurveys, child: const Text('Retry')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// "Submitted 27/4/2026" when the server reported when, otherwise just "Submitted".
+  String _submittedLabel(Map<String, dynamic> survey) {
+    final raw = submittedAt[survey['id'].toString()];
+    final d = raw == null ? null : DateTime.tryParse(raw);
+    return d == null ? 'Submitted' : 'Submitted ${DateFormat('d/M/yyyy').format(d.toLocal())}';
+  }
+
+  Widget _buildUnknownCompletionNotice() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: Colors.amber.shade50, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.amber.shade200)),
+      child: Text(
+        "We couldn't confirm which surveys you've completed. Some listed here may already be submitted.",
+        style: GoogleFonts.montserrat(fontSize: 12, color: Colors.black87),
+      ),
+    );
+  }
+
+  Widget _buildCompletedUnavailable() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Text("Completed surveys can't be shown right now.", textAlign: TextAlign.center, style: GoogleFonts.montserrat(color: Colors.black54)),
       ),
     );
   }
@@ -278,7 +371,7 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        "Submitted",
+                        _submittedLabel(s),
                         style: GoogleFonts.montserrat(
                           fontSize: 8,
                           color: Colors.grey.shade600,
@@ -291,6 +384,10 @@ class _SurveysScreenState extends State<SurveysScreen> with SingleTickerProvider
           ),
           const SizedBox(height: 8),
           Text(s['description'] ?? '', style: GoogleFonts.montserrat(fontSize: 13, color: Colors.black54)),
+          if (s['questions'] is List) ...[
+            const SizedBox(height: 6),
+            Text('${(s['questions'] as List).length} questions', style: GoogleFonts.montserrat(fontSize: 12, color: Colors.black45)),
+          ],
           if (isActive) ...[
             const SizedBox(height: 16),
             ElevatedButton(

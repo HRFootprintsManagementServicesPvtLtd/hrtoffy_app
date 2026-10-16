@@ -4,11 +4,33 @@ import '../core/api/api_client.dart';
 import '../repositories/engagement_repository.dart';
 import '../widgets/employee_ui.dart';
 
+/// What the employee sees when a survey could not be submitted. Never the raw server or exception text.
+///
+/// Submitting first reads `GET .../my-response` and then posts `.../respond`; either call can fail, and in
+/// every case below nothing was saved. A 404 from either one means the survey (or the route) could not be
+/// found, NOT that the survey is unanswered, so the answers are never posted on a 404. A duplicate (409)
+/// is handled separately by the caller.
+String surveySubmitErrorMessage(Object e) {
+  const notSubmitted = 'Your answers were not submitted.';
+  if (e is ApiException) {
+    if (e.isNetworkError) return 'Network problem. Check your connection and try again. $notSubmitted';
+    if (e.isUnauthorized) return 'Session expired. Please sign in again. $notSubmitted';
+    if (e.isForbidden) return "You don't have permission to answer this survey. $notSubmitted";
+    if (e.isNotFound) return "This survey isn't available right now. Please go back and refresh the list. $notSubmitted";
+    if (e.statusCode == 400 || e.statusCode == 422) return "This survey can't take answers right now. It may be closed. $notSubmitted";
+    if (e.isServerError) return 'The server is busy right now. Please try again. $notSubmitted';
+  }
+  return "We couldn't submit your survey right now. Please try again. $notSubmitted";
+}
+
 class SurveyResponseScreen extends StatefulWidget {
   final Map<String, dynamic> survey;
   final String employeeId;
   final String organizationId;
   final String userEmail;
+
+  /// Tests only: the repository to submit through (defaults to the signed-in session's).
+  final EngagementRepository? repository;
 
   const SurveyResponseScreen({
     Key? key,
@@ -16,6 +38,7 @@ class SurveyResponseScreen extends StatefulWidget {
     required this.employeeId,
     required this.organizationId,
     required this.userEmail,
+    this.repository,
   }) : super(key: key);
 
   @override
@@ -25,7 +48,7 @@ class SurveyResponseScreen extends StatefulWidget {
 
 class _SurveyResponseScreenState
     extends State<SurveyResponseScreen> {
-final _engagement = EngagementRepository();
+late final EngagementRepository _engagement = widget.repository ?? EngagementRepository();
 
 bool loading = false;
 
@@ -94,9 +117,15 @@ Text("You have already submitted this survey."),
 );
 } else {
 ScaffoldMessenger.of(context).showSnackBar(
-SnackBar(content: Text(e.message)),
+SnackBar(content: Text(surveySubmitErrorMessage(e))),
 );
 }
+} catch (e) {
+if (!mounted) return;
+
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content: Text(surveySubmitErrorMessage(e))),
+);
 } finally {
 if (mounted) {
 setState(() {

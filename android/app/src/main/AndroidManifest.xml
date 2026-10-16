@@ -41,8 +41,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <application
         android:label="HR Toffy"
-        android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
+        android:icon="@mipmap/ic_launcher">
         <meta-data android:name="flutterEmbedding" android:value="2"/>
 
         <!-- 🗺️ GOOGLE MAPS API KEY -->

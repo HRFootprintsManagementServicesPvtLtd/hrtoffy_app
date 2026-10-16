@@ -1,5 +1,5 @@
 // Helpers that let repositories hand the UI the same snake_case, plain-typed
-// maps it used to receive from Supabase, regardless of how the HR Toffy
+// maps it received from the previous backend, regardless of how the HR Toffy
 // backend serialises them (camelCase DTOs, Decimal strings, ISO datetimes).
 
 String _camelToSnake(String key) {

@@ -4,4 +4,7 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Debug builds only: plain-HTTP traffic (for example a local backend passed with dart-define API_BASE_URL=http://10.0.2.2:...).
+         Release and profile builds do not allow cleartext traffic: the app talks to https://api.hrtoffy.in. -->
+    <application android:usesCleartextTraffic="true"/>
 </manifest>

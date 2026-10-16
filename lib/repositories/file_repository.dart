@@ -59,7 +59,7 @@ class FileRepository extends BaseRepository {
   }
 
   /// `GET /organizations/:orgId/files/url?ref=...` -> a URL that opens the file for a while.
-  /// [ref] may be a `bucket/path` reference, a legacy Supabase-era URL stored in an old row,
+  /// [ref] may be a `bucket/path` reference, a legacy storage URL from the previous backend stored in an old row,
   /// or a bare legacy path (then give [bucketHint]).
   Future<String> url(String ref, {String? bucketHint, int? expiresInSeconds}) async {
     if (ref.startsWith('http') && !ref.contains('/storage/v1/object/')) return ref; // an ordinary external URL

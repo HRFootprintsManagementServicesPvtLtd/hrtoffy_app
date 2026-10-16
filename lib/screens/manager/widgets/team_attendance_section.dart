@@ -5,10 +5,7 @@ import 'package:intl/intl.dart';
 class TeamAttendanceSection extends StatelessWidget {
   final List<dynamic> attendance;
 
-  const TeamAttendanceSection({
-    super.key,
-    required this.attendance,
-  });
+  const TeamAttendanceSection({super.key, required this.attendance});
 
   @override
   Widget build(BuildContext context) {
@@ -20,7 +17,10 @@ class TeamAttendanceSection extends StatelessWidget {
             children: [
               Icon(Icons.access_time, size: 60, color: Colors.grey[300]),
               const SizedBox(height: 16),
-              Text("No attendance records", style: GoogleFonts.montserrat(color: Colors.grey)),
+              Text(
+                "No attendance records",
+                style: GoogleFonts.montserrat(color: Colors.grey),
+              ),
             ],
           ),
         ),
@@ -49,10 +49,11 @@ class TeamAttendanceSection extends StatelessWidget {
           ),
           // Data Rows
           ...attendance.map((item) {
-            final String employee = item['employee_records']?['full_name'] ?? 'Unknown';
+            final String employee =
+                item['employee_records']?['full_name'] ?? 'Unknown';
             final String date = item['date'] ?? '-';
             final String status = item['status'] ?? 'absent';
-            
+
             return Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
               decoration: BoxDecoration(
@@ -64,20 +65,23 @@ class TeamAttendanceSection extends StatelessWidget {
                     flex: 3,
                     child: Text(
                       employee,
-                      style: GoogleFonts.montserrat(fontSize: 13, fontWeight: FontWeight.w600),
+                      style: GoogleFonts.montserrat(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                   Expanded(
                     flex: 2,
                     child: Text(
                       date,
-                      style: GoogleFonts.montserrat(fontSize: 12, color: Colors.black87),
+                      style: GoogleFonts.montserrat(
+                        fontSize: 12,
+                        color: Colors.black87,
+                      ),
                     ),
                   ),
-                  Expanded(
-                    flex: 2,
-                    child: _buildStatusPill(status),
-                  ),
+                  Expanded(flex: 2, child: _buildStatusPill(status)),
                 ],
               ),
             );
@@ -90,14 +94,28 @@ class TeamAttendanceSection extends StatelessWidget {
   Widget _headerCell(String text) {
     return Text(
       text.toUpperCase(),
-      style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.blueGrey),
+      style: GoogleFonts.montserrat(
+        fontSize: 10,
+        fontWeight: FontWeight.bold,
+        color: Colors.blueGrey,
+      ),
     );
   }
 
   Widget _buildStatusPill(String status) {
     Color color = Colors.red;
-    if (status.toLowerCase() == 'present') color = Colors.green;
-    if (status.toLowerCase() == 'half day') color = Colors.orange;
+    switch (status.toLowerCase()) {
+      case 'present':
+        color = Colors.green;
+      case 'half day':
+      case 'late':
+        color = Colors.orange;
+      case 'on leave':
+        color = Colors.blue;
+      case 'holiday':
+      case 'weekly off':
+        color = Colors.blueGrey;
+    }
 
     return UnconstrainedBox(
       alignment: Alignment.centerLeft,
@@ -109,7 +127,11 @@ class TeamAttendanceSection extends StatelessWidget {
         ),
         child: Text(
           status.toUpperCase(),
-          style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: color,
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ),
     );

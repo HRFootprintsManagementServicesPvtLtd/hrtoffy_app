@@ -1,10 +1,9 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:intl/intl.dart';
-import 'package:file_picker/file_picker.dart';
+import '../core/api/json_case.dart';
+import '../repositories/loans_repository.dart';
 import '../widgets/skeleton_layouts.dart';
 import '../widgets/app_drawer.dart';
 import 'dashboard_screen.dart';
@@ -15,39 +14,193 @@ import 'notification.dart';
 import '../widgets/drawer_route.dart';
 import '../widgets/employee_ui.dart';
 
+/// The request may have reached the server even when the answer was lost, so the employee is told to check the list.
+const String kLoanRequestFailedMessage =
+    "Couldn't submit your loan request. Check My Loans before trying again.";
+
+/// The largest amount the `requested_amount` column (decimal 12,2) can hold.
+const double kLoanMaxAmountColumn = 9999999999.99;
+
+/// Form for a loan request: amount, reason and an optional repayment period. Nothing else is sent.
+/// The grade limit and eligibility are not checked here; the server does not enforce them either.
+class LoanApplicationSheet extends StatefulWidget {
+  final Future<bool> Function({
+    required double amount,
+    required String reason,
+    int? repaymentMonths,
+  })
+  onSubmit;
+  const LoanApplicationSheet({super.key, required this.onSubmit});
+
+  @override
+  State<LoanApplicationSheet> createState() => _LoanApplicationSheetState();
+}
+
+class _LoanApplicationSheetState extends State<LoanApplicationSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _amount = TextEditingController();
+  final _reason = TextEditingController();
+  final _months = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    _reason.dispose();
+    _months.dispose();
+    super.dispose();
+  }
+
+  static final _amountPattern = RegExp(r'^\d+(\.\d{1,2})?$');
+
+  String? _validateAmount(String? v) {
+    final t = (v ?? '').trim();
+    if (!_amountPattern.hasMatch(t))
+      return 'Enter a valid amount (up to 2 decimals)';
+    final n = double.tryParse(t);
+    if (n == null || n <= 0) return 'Amount must be greater than 0';
+    if (n > kLoanMaxAmountColumn) return 'Amount is too large';
+    return null;
+  }
+
+  String? _validateReason(String? v) =>
+      (v ?? '').trim().isEmpty ? 'Reason is required' : null;
+
+  String? _validateMonths(String? v) {
+    final t = (v ?? '').trim();
+    if (t.isEmpty) return null;
+    final n = int.tryParse(t);
+    if (n == null || n < 1)
+      return 'Enter a whole number of months, or leave blank';
+    return null;
+  }
+
+  Future<void> _submit() async {
+    if (_submitting || !_formKey.currentState!.validate()) return;
+    setState(() => _submitting = true);
+    final monthsText = _months.text.trim();
+    final ok = await widget.onSubmit(
+      amount: double.parse(_amount.text.trim()),
+      reason: _reason.text.trim(),
+      repaymentMonths: monthsText.isEmpty ? null : int.parse(monthsText),
+    );
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pop(true);
+    } else {
+      setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        20,
+        20,
+        20,
+        20 + MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Apply for a loan',
+                style: GoogleFonts.montserrat(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _amount,
+                enabled: !_submitting,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(labelText: 'Amount (₹)'),
+                validator: _validateAmount,
+              ),
+              TextFormField(
+                controller: _reason,
+                enabled: !_submitting,
+                maxLines: 2,
+                decoration: const InputDecoration(labelText: 'Reason'),
+                validator: _validateReason,
+              ),
+              TextFormField(
+                controller: _months,
+                enabled: !_submitting,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Repayment months (optional)',
+                  helperText: 'If left blank, 12 months is used.',
+                ),
+                validator: _validateMonths,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Your request is sent for review. Any limit or eligibility rule is applied by HR, not by this form. '
+                'Documents cannot be attached from the app.',
+                style: GoogleFonts.montserrat(
+                  fontSize: 12,
+                  color: Colors.grey[700],
+                ),
+              ),
+              const SizedBox(height: 14),
+              ElevatedButton(
+                onPressed: _submitting ? null : _submit,
+                child: Text(_submitting ? 'Submitting...' : 'Submit request'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class LoansAdvancesScreen extends StatefulWidget {
   final String userEmail;
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
+
+  /// Overridable for tests; default to the signed-in session.
+  final LoansRepository? loansRepository;
 
   const LoansAdvancesScreen({
     Key? key,
     required this.userEmail,
     required this.userData,
     required this.fetchHrmsContext,
+    this.loansRepository,
   }) : super(key: key);
 
   @override
   State<LoansAdvancesScreen> createState() => _LoansAdvancesScreenState();
 }
 
-class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTickerProviderStateMixin {
+class _LoansAdvancesScreenState extends State<LoansAdvancesScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
-  final supabase = Supabase.instance.client;
-
-  double? maxEligibleAmount;
-  double utilizationPercent = 0.0;
-  double totalOutstanding = 0.0;
-  bool loadingEligibility = true;
+  late final LoansRepository _loansRepo =
+      widget.loansRepository ?? LoansRepository();
+  bool _loansLoading = true;
+  bool _loansFailed = false;
+  List<Map<String, dynamic>> _loans = [];
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     _tabController.addListener(() => setState(() {}));
-    _fetchEligibility();
+    _load();
   }
 
   @override
@@ -56,93 +209,97 @@ class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTi
     super.dispose();
   }
 
-  Future<void> _fetchEligibility() async {
+  /// The employee's own loans from the HR Toffy API (read-only). The employee comes from the signed-in
+  /// session; the grade's loan limit is not loaded because nothing on this screen shows it.
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() => _loansLoading = true);
     try {
-      if (!mounted) return;
-      setState(() => loadingEligibility = true);
-      // NEW
-      final empId = widget.userData['id'] ?? widget.userData['employee_id'];
-      final grade = widget.userData['grade_code'] ?? widget.userData['grade'] ?? widget.userData['grade_name'];
-      final orgId = widget.userData['organization_id'];
+      _loans = await _loansRepo.loans();
+      _loansFailed = false;
+    } catch (_) {
+      debugPrint('[Loans] loading loans failed');
+      _loans = [];
+      _loansFailed = true;
+    }
+    if (mounted) setState(() => _loansLoading = false);
+  }
 
-      if (grade != null && orgId != null) {
-        final gradeRes = await supabase
-            .from('grade_structure')
-            .select('loan_max_amount')
-            .eq('organization_id', orgId)
-            .eq('grade_code', grade)
-            .maybeSingle();
-        if (gradeRes != null) {
-          maxEligibleAmount = (gradeRes['loan_max_amount'] ?? 0).toDouble();
-        }
+  bool _applying = false;
+
+  /// Opens the loan request form. The request goes to `POST /loans/request` for the signed-in employee (taken from the
+  /// session by the repository). The backend creates a pending request only: no documents, no manager, and no
+  /// server-side check of the grade's loan limit.
+  Future<void> _openApplication() async {
+    if (_applying) return;
+    _applying = true;
+    try {
+      final submitted = await showModalBottomSheet<bool>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => LoanApplicationSheet(onSubmit: _submitRequest),
+      );
+      if (submitted == true) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Loan request submitted. It is pending review.'),
+          ),
+        );
+        await _load();
       }
-
-
-      final activeLoans = await supabase.from('loans_advances').select('requested_amount, status').eq('employee_id', empId).inFilter('status', ['active', 'approved', 'pending']);
-      
-      double used = 0;
-      if (activeLoans is List && activeLoans.isNotEmpty) {
-        for (var l in activeLoans) {
-          used += (double.tryParse(l['requested_amount']?.toString() ?? '0') ?? 0);
-        }
-      }
-
-      totalOutstanding = used;
-      if (maxEligibleAmount != null && maxEligibleAmount! > 0) {
-        utilizationPercent = (used / maxEligibleAmount!).clamp(0.0, 1.0);
-      }
-    } catch (e) {
-      debugPrint("Eligibility error: $e");
     } finally {
-      if (mounted) setState(() => loadingEligibility = false);
+      _applying = false;
     }
   }
 
-  Widget _buildEligibilityCard() {
-    if (loadingEligibility) return const Padding(padding: EdgeInsets.all(20), child: LinearProgressIndicator());
-    if (maxEligibleAmount == null) return const SizedBox.shrink();
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-      padding: const EdgeInsets.all(20),
-      decoration: EmployeeUi.cardDecoration(color: EmployeeUi.blueBg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text("Loan Eligibility", style: EmployeeUi.title(16)),
-              Text("₹${NumberFormat('#,##,###').format(maxEligibleAmount)} limit", style: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.blue.shade700)),
-            ],
-          ),
-          const SizedBox(height: 16),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: LinearProgressIndicator(
-              value: utilizationPercent,
-              minHeight: 10,
-              backgroundColor: Colors.white,
-              valueColor: AlwaysStoppedAnimation<Color>(utilizationPercent > 0.8 ? Colors.red : EmployeeUi.primary),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text("Utilization: ${(utilizationPercent * 100).toStringAsFixed(0)}%", style: GoogleFonts.montserrat(fontSize: 12, color: Colors.black54, fontWeight: FontWeight.w500)),
-              Text("Outstanding: ₹${NumberFormat('#,##,###').format(totalOutstanding)}", style: GoogleFonts.montserrat(fontSize: 12, color: Colors.black54, fontWeight: FontWeight.w500)),
-            ],
-          ),
-        ],
-      ),
-    );
+  /// True when the server accepted the request. A fixed message is shown otherwise, never the server's text.
+  Future<bool> _submitRequest({
+    required double amount,
+    required String reason,
+    int? repaymentMonths,
+  }) async {
+    try {
+      await _loansRepo.requestLoan(
+        amount: amount,
+        reason: reason,
+        repaymentMonths: repaymentMonths,
+      );
+      return true;
+    } catch (_) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(kLoanRequestFailedMessage)),
+        );
+      return false;
+    }
   }
 
   Widget _circleIconBtn({required String icon, required VoidCallback onTap}) {
     return Container(
-      decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))]),
-      child: IconButton(icon: SvgPicture.asset(icon, width: 20, height: 20, colorFilter: const ColorFilter.mode(EmployeeUi.primary, BlendMode.srcIn)), onPressed: onTap),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: IconButton(
+        icon: SvgPicture.asset(
+          icon,
+          width: 20,
+          height: 20,
+          colorFilter: const ColorFilter.mode(
+            EmployeeUi.primary,
+            BlendMode.srcIn,
+          ),
+        ),
+        onPressed: onTap,
+      ),
     );
   }
 
@@ -173,16 +330,33 @@ class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTi
                 child: _circleIconBtn(
                   icon: "assets/icons/notification.svg",
                   onTap: () {
-                    final empId = (widget.userData['id'] ?? widget.userData['employee_id'])?.toString() ?? '';
+                    final empId =
+                        (widget.userData['id'] ??
+                                widget.userData['employee_id'])
+                            ?.toString() ??
+                        '';
                     if (empId.isNotEmpty) {
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => NotificationsScreen(employeeId: empId, userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext)));
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => NotificationsScreen(
+                            employeeId: empId,
+                            userEmail: widget.userEmail,
+                            userData: widget.userData,
+                            fetchHrmsContext: widget.fetchHrmsContext,
+                          ),
+                        ),
+                      );
                     }
                   },
                 ),
               ),
               Padding(
                 padding: const EdgeInsets.only(right: 16, top: 12),
-                child: _circleIconBtn(icon: "assets/icons/menu.svg", onTap: () => _scaffoldKey.currentState?.openEndDrawer()),
+                child: _circleIconBtn(
+                  icon: "assets/icons/menu.svg",
+                  onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
+                ),
               ),
               const SizedBox(width: 1),
             ],
@@ -202,7 +376,14 @@ class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTi
                   children: [
                     Text("Loans & Advances", style: EmployeeUi.header(24)),
                     const SizedBox(height: 4),
-                    Text("Manage your financial requests", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
+                    Text(
+                      "Manage your financial requests",
+                      style: GoogleFonts.montserrat(
+                        fontSize: 12,
+                        color: EmployeeUi.muted,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -251,24 +432,24 @@ class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTi
             child: TabBarView(
               controller: _tabController,
               children: [
-                MyLoansTab(userEmail: widget.userEmail),
-                EMIScheduleTab(),
+                MyLoansTab(
+                  loans: _loans,
+                  loading: _loansLoading,
+                  loadFailed: _loansFailed,
+                ),
+                EMIScheduleTab(repository: _loansRepo),
               ],
             ),
           ),
         ],
       ),
-      floatingActionButton: _tabController.index == 0 ? FloatingActionButton(
-        onPressed: () async {
-          final result = await Navigator.push(context, MaterialPageRoute(builder: (_) => ApplyLoanPage(userData: widget.userData)));
-          if (result == true) {
-            _fetchEligibility();
-            setState(() {});
-          }
-        },
-        backgroundColor: EmployeeUi.primary,
-        child: const Icon(Icons.add, color: Colors.white),
-      ) : null,
+      floatingActionButton: _tabController.index == 0
+          ? FloatingActionButton(
+              onPressed: _openApplication,
+              backgroundColor: EmployeeUi.primary,
+              child: const Icon(Icons.add, color: Colors.white),
+            )
+          : null,
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,
         selectedFontSize: 10,
@@ -279,29 +460,121 @@ class _LoansAdvancesScreenState extends State<LoansAdvancesScreen> with SingleTi
         showSelectedLabels: true,
         showUnselectedLabels: true,
         onTap: (index) async {
-          if (index == 0) { Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(email: widget.userEmail, employeeId: widget.userData['id'].toString()))); return; }
-          if (index == 1) { Navigator.push(context, MaterialPageRoute(builder: (_) => LeavesScreen(email: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
-          if (index == 2) { Navigator.push(context, MaterialPageRoute(builder: (_) => TimeAttendanceScreen(userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
-          if (index == 3) { Navigator.push(context, MaterialPageRoute(builder: (_) => PayslipScreen(userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
-          if (index == 4) { _scaffoldKey.currentState?.openEndDrawer(); return; }
+          if (index == 0) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => DashboardScreen(
+                  email: widget.userEmail,
+                  employeeId: widget.userData['id'].toString(),
+                ),
+              ),
+            );
+            return;
+          }
+          if (index == 1) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => LeavesScreen(
+                  email: widget.userEmail,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext,
+                ),
+              ),
+            );
+            return;
+          }
+          if (index == 2) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => TimeAttendanceScreen(
+                  userEmail: widget.userEmail,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext,
+                ),
+              ),
+            );
+            return;
+          }
+          if (index == 3) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => PayslipScreen(
+                  userEmail: widget.userEmail,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext,
+                ),
+              ),
+            );
+            return;
+          }
+          if (index == 4) {
+            _scaffoldKey.currentState?.openEndDrawer();
+            return;
+          }
         },
         items: [
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/dashboard.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Dashboard'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/leaves.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Leave'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/attendance.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Attendance'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/payroll.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Payslip'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/menu.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'More'),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/dashboard.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Dashboard',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/leaves.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Leave',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/attendance.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Attendance',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/payroll.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Payslip',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/menu.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'More',
+          ),
         ],
       ),
     );
   }
 }
 
-// NEW
+/// The employee's loans (already loaded by the screen). Amounts the server could not give a usable value
+/// for are shown as "Not available" rather than "₹0".
 class MyLoansTab extends StatelessWidget {
-  final String userEmail;
-  final SupabaseClient supabase = Supabase.instance.client;
-  MyLoansTab({Key? key, required this.userEmail}) : super(key: key);
+  final List<Map<String, dynamic>> loans;
+  final bool loading;
+  final bool loadFailed;
+  const MyLoansTab({
+    Key? key,
+    required this.loans,
+    this.loading = false,
+    this.loadFailed = false,
+  }) : super(key: key);
 
   static const List<Color> _pastelPalette = [
     Color(0xFFD7E8FF), // Soft Blue
@@ -312,100 +585,188 @@ class MyLoansTab extends StatelessWidget {
     Color(0xFFFFF7D6), // Soft Yellow
   ];
 
-
-  Future<List<Map<String, dynamic>>> fetchLoans() async {
-    final email = userEmail;
-    final emp = await supabase.from('employee_records').select('id').eq('email', email).maybeSingle();
-    if (emp == null) return [];
-    final res = await supabase.from('loans_advances').select().eq('employee_id', emp['id']).order('created_at', ascending: false);
-    return List<Map<String, dynamic>>.from(res as List);
-  }
-
   String formatCurrency(dynamic value) {
-    if (value == null) return '₹0';
-    return '₹${NumberFormat('#,##,###').format(double.tryParse(value.toString()) ?? 0)}';
+    final n = asNum(value);
+    if (!LoansRepository.isUsableAmount(n)) return 'Not available';
+    return '₹${NumberFormat('#,##,###').format(n)}';
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: fetchLoans(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) return const SkeletonLoansMyLoans();
-        if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [SvgPicture.asset("assets/icons/loans.svg", height: 80, colorFilter: const ColorFilter.mode(Colors.blueGrey, BlendMode.srcIn)), const SizedBox(height: 20), Text("No loans found", style: GoogleFonts.montserrat(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black54))]));
+    if (loading) return const SkeletonLoansMyLoans();
+    if (loans.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SvgPicture.asset(
+              "assets/icons/loans.svg",
+              height: 80,
+              colorFilter: const ColorFilter.mode(
+                Colors.blueGrey,
+                BlendMode.srcIn,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              loadFailed
+                  ? "Couldn't load your loans. Please try again later."
+                  : "No loans found",
+              textAlign: TextAlign.center,
+              style: GoogleFonts.montserrat(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Colors.black54,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(20),
+      itemCount: loans.length,
+      itemBuilder: (context, i) {
+        final loan = loans[i];
+        final status = (loan['status'] ?? "").toString().toLowerCase();
+        Color statusColor = Colors.grey;
+        if (status == 'approved' || status == 'active') {
+          statusColor = Colors.green;
+        } else if (status == 'pending') {
+          statusColor = Colors.orange;
+        } else if (status == 'rejected') {
+          statusColor = Colors.red;
         }
-        final loans = snapshot.data!;
-        return ListView.builder(
+
+        final pastel = _pastelPalette[i % _pastelPalette.length];
+        final baseDeco = EmployeeUi.cardDecoration();
+        final tenure = asNum(loan['tenure_months'])?.toInt();
+        return Container(
+          margin: const EdgeInsets.only(bottom: 16),
           padding: const EdgeInsets.all(20),
-          itemCount: loans.length,
-          itemBuilder: (context, i) {
-            final loan = loans[i];
-            final status = (loan['status'] ?? "").toString().toLowerCase();
-            Color statusColor = Colors.grey;
-            if (status == 'approved' || status == 'active') statusColor = Colors.green;
-            else if (status == 'pending') statusColor = Colors.orange;
-            else if (status == 'rejected') statusColor = Colors.red;
-
-            // NEW
-            final pastel = _pastelPalette[i % _pastelPalette.length];
-            final baseDeco = EmployeeUi.cardDecoration();
-            return Container(
-              margin: const EdgeInsets.only(bottom: 16),
-              padding: const EdgeInsets.all(20),
-              decoration: (baseDeco is BoxDecoration)
-                  ? baseDeco.copyWith(color: pastel)
-                  : BoxDecoration(color: pastel, borderRadius: BorderRadius.circular(12)),
-
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+          decoration: (baseDeco is BoxDecoration)
+              ? baseDeco.copyWith(color: pastel)
+              : BoxDecoration(
+                  color: pastel,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text(loan['loan_number'] ?? "LOAN-ID", style: EmployeeUi.title(15)),
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)), child: Text(status.toUpperCase(), style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.bold, color: statusColor))),
-                  ]),
-                  const SizedBox(height: 12),
-                  _rowInfo("Category", loan['loan_category']),
-                  _rowInfo("Amount", formatCurrency(loan['requested_amount'])),
-                  _rowInfo("Tenure", "${loan['tenure_months']} months"),
+                  Text(
+                    (loan['loan_number'] ?? "LOAN-ID").toString(),
+                    style: EmployeeUi.title(15),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: statusColor.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      status.toUpperCase(),
+                      style: GoogleFonts.montserrat(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: statusColor,
+                      ),
+                    ),
+                  ),
                 ],
               ),
-            );
-          },
+              const SizedBox(height: 12),
+              _rowInfo("Category", loan['loan_category']),
+              _rowInfo("Amount", formatCurrency(loan['requested_amount'])),
+              _rowInfo("Tenure", tenure == null ? '-' : "$tenure months"),
+            ],
+          ),
         );
       },
     );
   }
 
   Widget _rowInfo(String label, dynamic value) {
-    return Padding(padding: const EdgeInsets.only(bottom: 4), child: Row(children: [Text("$label: ", style: GoogleFonts.montserrat(fontSize: 13, color: Colors.black54, fontWeight: FontWeight.w500)), Text(value?.toString() ?? '-', style: GoogleFonts.montserrat(fontSize: 13, fontWeight: FontWeight.w600))]));
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Text(
+            "$label: ",
+            style: GoogleFonts.montserrat(
+              fontSize: 13,
+              color: Colors.black54,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          Text(
+            value?.toString() ?? '-',
+            style: GoogleFonts.montserrat(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
-class EMIScheduleTab extends StatelessWidget {
-  final supabase = Supabase.instance.client;
+/// The instalment schedule of the employee's loans. An instalment whose EMI amount is missing or 0 shows
+/// "Not available" (and hides the outstanding balance) instead of presenting zeros as real figures.
+class EMIScheduleTab extends StatefulWidget {
+  final LoansRepository repository;
+  const EMIScheduleTab({Key? key, required this.repository}) : super(key: key);
 
-  Future<List<Map<String, dynamic>>> fetchEMI() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) return [];
-    final res = await supabase.from('loan_emi_schedule').select('*, loans_advances(loan_number)').eq('employee_id', user.id).order('due_date', ascending: true);
-    return List<Map<String, dynamic>>.from(res as List);
+  @override
+  State<EMIScheduleTab> createState() => _EMIScheduleTabState();
+}
+
+class _EMIScheduleTabState extends State<EMIScheduleTab> {
+  late Future<List<Map<String, dynamic>>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.repository.emiSchedule();
   }
 
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<List<Map<String, dynamic>>>(
-      future: fetchEMI(),
+      future: _future,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                "Couldn't load your EMI schedule. Please try again later.",
+                textAlign: TextAlign.center,
+              ),
+            ),
+          );
+        }
         if (!snapshot.hasData) return const SkeletonLoansEMISchedule();
         final emis = snapshot.data!;
-        if (emis.isEmpty) return const Center(child: Text("No EMI schedules found."));
+        if (emis.isEmpty)
+          return const Center(child: Text("No EMI schedules found."));
         return ListView.builder(
           padding: const EdgeInsets.all(20),
           itemCount: emis.length,
           itemBuilder: (context, i) {
             final emi = emis[i];
-            final status = (emi['status'] ?? 'pending').toString().toLowerCase();
+            final status = (emi['status'] ?? 'pending')
+                .toString()
+                .toLowerCase();
+            final emiAmount = asNum(emi['emi_amount']);
+            final emiUsable = LoansRepository.isUsableAmount(emiAmount);
+            final outstanding = asNum(emi['outstanding_principal']);
             return Container(
               margin: const EdgeInsets.only(bottom: 12),
               padding: const EdgeInsets.all(16),
@@ -416,215 +777,48 @@ class EMIScheduleTab extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text("Loan: ${emi['loans_advances']?['loan_number'] ?? '-'}", style: EmployeeUi.title(14)),
-                      Text(status.toUpperCase(), style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.bold, color: status == 'paid' ? Colors.green : Colors.orange)),
+                      Text(
+                        "Loan: ${emi['loans_advances']?['loan_number'] ?? '-'}",
+                        style: EmployeeUi.title(14),
+                      ),
+                      Text(
+                        status.toUpperCase(),
+                        style: GoogleFonts.montserrat(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: status == 'paid'
+                              ? Colors.green
+                              : Colors.orange,
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Text("Due Date: ${emi['due_date'].toString().substring(0, 10)}", style: GoogleFonts.montserrat(fontSize: 13)),
-                  Text("Outstanding: ₹${NumberFormat('#,##,###').format(emi['outstanding_principal'] ?? 0)}", style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                  Text("EMI Amount: ₹${NumberFormat('#,##,###').format(emi['emi_amount'] ?? 0)}", style: GoogleFonts.montserrat(fontSize: 13, fontWeight: FontWeight.bold, color: EmployeeUi.primary)),
+                  Text(
+                    "Due Date: ${asDateOnly(emi['due_date']) ?? '-'}",
+                    style: GoogleFonts.montserrat(fontSize: 13),
+                  ),
+                  if (emiUsable && outstanding != null)
+                    Text(
+                      "Outstanding: ₹${NumberFormat('#,##,###').format(outstanding)}",
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  Text(
+                    emiUsable
+                        ? "EMI Amount: ₹${NumberFormat('#,##,###').format(emiAmount)}"
+                        : "EMI Amount: Not available",
+                    style: GoogleFonts.montserrat(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: EmployeeUi.primary,
+                    ),
+                  ),
                 ],
               ),
             );
           },
         );
       },
-    );
-  }
-}
-
-class ApplyLoanPage extends StatefulWidget {
-  final Map<String, dynamic> userData;
-  const ApplyLoanPage({Key? key, required this.userData}) : super(key: key);
-
-  @override
-  State<ApplyLoanPage> createState() => _ApplyLoanPageState();
-}
-
-class _ApplyLoanPageState extends State<ApplyLoanPage> {
-  final _formKey = GlobalKey<FormState>();
-  final _amountController = TextEditingController();
-  final _purposeController = TextEditingController();
-  final supabase = Supabase.instance.client;
-  String? _loanCategory = 'personal_loan';
-  int tenure = 12;
-  DateTime? emiStartDate;
-  PlatformFile? attachment;
-  bool submitting = false;
-
-  final List<String> categories = ["salary_advance", "personal_loan", "emergency_loan", "education_loan", "vehicle_loan", "travel_advance"];
-  final List<int> tenureOptions = [3, 6, 12, 18, 24, 36];
-
-  String prettify(String text) => text.split('_').map((e) => e[0].toUpperCase() + e.substring(1).toLowerCase()).join(' ');
-
-  Future<void> submitLoan() async {
-    if (!_formKey.currentState!.validate()) return;
-    if (emiStartDate == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please select EMI start date")));
-      return;
-    }
-    
-    setState(() => submitting = true);
-    try {
-      final empId = widget.userData['id'] ?? widget.userData['employee_id'];
-      final orgId = widget.userData['organization_id'];
-      final managerId = widget.userData['manager_id'];
-
-      // NEW — match website path: {auth.uid}/{employee_id}/{timestamp}_{filename}
-      String? fileUrl;
-      if (attachment != null) {
-        final ext = (attachment!.extension ?? attachment!.name.split('.').last).toLowerCase();
-        const mimeMap = <String, String>{
-          'jpg':  'image/jpeg',
-          'jpeg': 'image/jpeg',
-          'png':  'image/png',
-          'pdf':  'application/pdf',
-          'webp': 'image/webp',
-          'heic': 'image/heic',
-          'doc':  'application/msword',
-          'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        };
-        final contentType = mimeMap[ext] ?? 'application/octet-stream';
-
-        final authUid = supabase.auth.currentUser!.id;
-        final path = '$authUid/$empId/loans/${DateTime.now().millisecondsSinceEpoch}_${attachment!.name}';
-
-// keep your existing mimeMap/contentType logic
-        await supabase.storage.from('claim-documents').upload(
-          path,
-          File(attachment!.path!),
-          fileOptions: FileOptions(
-            contentType: contentType, // from your existing mimeMap
-            upsert: false,
-          ),
-        );
-
-// bucket is private — store the path (or a signed URL), not getPublicUrl
-        fileUrl = path;
-
-      }
-
-
-
-      // STEP 2 — Insert loan (payload matches website LoanApplicationForm.tsx exactly).
-      // Do NOT chain .select().single(): re-reading the row forces the full
-      // permissive SELECT-policy cascade on loans_advances (is_manager_of_employee,
-      // is_in_reviewer_hierarchy, _has_scoped_custom_role JSONB LATERAL scans, etc.)
-      // which causes PostgREST statement_timeout (57014).
-      // Also: loan_number is filled by BEFORE INSERT trigger set_loan_number.
-      // Also: 'initialize_workflow' is NOT a Postgres RPC — the website initializes
-      // the workflow via client-side utils/workflowEngine.ts, which isn't wired
-      // into Flutter yet. Leaving status='pending' is safe; HR/Manager approval
-      // via the web app initializes the workflow record on first action.
-      debugPrint('[submitLoan] STEP 2 insert loans_advances emp=$empId org=$orgId');
-      await supabase.from('loans_advances').insert({
-        "employee_id": empId,
-        "organization_id": orgId,
-        "loan_type_id": null,
-        "loan_category": _loanCategory,
-        "requested_amount": double.parse(_amountController.text),
-        "tenure_months": tenure,
-        "emi_start_date": emiStartDate!.toIso8601String(),
-        "purpose": _purposeController.text,
-        "status": "pending",
-        "manager_id": managerId,
-        "interest_rate": 0,
-        "supporting_documents": fileUrl != null
-            ? [{'name': attachment!.name, 'url': fileUrl}]
-            : [],
-      });
-      debugPrint('[submitLoan] STEP 2 insert OK');
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Loan request submitted successfully."),
-          backgroundColor: Colors.green,
-          duration: Duration(seconds: 2),
-        ),
-      );
-
-      await Future.delayed(const Duration(seconds: 2));
-
-      if (!mounted) return;
-
-      Navigator.pop(context, true);
-    } catch (e) {
-      debugPrint("Application failed: $e");
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
-    } finally {
-      if (mounted) setState(() => submitting = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: EmployeeUi.pageBg,
-      appBar: EmployeeUi.appBar(title: "Apply for Loan"),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          decoration: EmployeeUi.cardDecoration(),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("Request Loan", style: EmployeeUi.title(18)),
-                const SizedBox(height: 24),
-                DropdownButtonFormField<String>(
-                  decoration: const InputDecoration(labelText: "Loan Category", border: OutlineInputBorder()),
-                  value: _loanCategory,
-                  items: categories.map((c) => DropdownMenuItem(value: c, child: Text(prettify(c)))).toList(),
-                  onChanged: (v) => setState(() => _loanCategory = v),
-                  validator: (v) => v == null ? "Select category" : null,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(controller: _amountController, decoration: const InputDecoration(labelText: "Requested Amount (₹)", border: OutlineInputBorder()), keyboardType: TextInputType.number, validator: (v) => (double.tryParse(v ?? "") ?? 0) <= 0 ? "Enter valid amount" : null),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<int>(
-                  decoration: const InputDecoration(labelText: "Tenure (Months)", border: OutlineInputBorder()),
-                  value: tenure,
-                  items: tenureOptions.map((t) => DropdownMenuItem(value: t, child: Text("$t Months"))).toList(),
-                  onChanged: (v) => setState(() => tenure = v!),
-                ),
-                const SizedBox(height: 16),
-                InkWell(
-                  onTap: () async {
-                    final d = await showDatePicker(context: context, initialDate: DateTime.now().add(const Duration(days: 30)), firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 365)));
-                    if (d != null) setState(() => emiStartDate = d);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
-                    decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(4)),
-                    child: Row(children: [Text(emiStartDate == null ? "Select EMI Start Date" : "EMI Starts: ${DateFormat('yyyy-MM-dd').format(emiStartDate!)}"), const Spacer(), const Icon(Icons.calendar_today, size: 18)]),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextFormField(controller: _purposeController, decoration: const InputDecoration(labelText: "Purpose", border: OutlineInputBorder()), minLines: 2, maxLines: 4, validator: (v) => (v == null || v.isEmpty) ? "Purpose required" : null),
-                const SizedBox(height: 16),
-                InkWell(
-                  onTap: () async {
-                    final result = await FilePicker.platform.pickFiles();
-                    if (result != null) setState(() => attachment = result.files.first);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8), color: Colors.grey.shade50),
-                    child: Row(children: [Icon(Icons.attach_file, color: EmployeeUi.primary), const SizedBox(width: 12), Expanded(child: Text(attachment == null ? "Attach Supporting Document" : attachment!.name, style: GoogleFonts.montserrat(fontSize: 13))), if (attachment != null) IconButton(icon: const Icon(Icons.close, size: 18), onPressed: () => setState(() => attachment = null))]),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                submitting ? const Center(child: CircularProgressIndicator()) : ElevatedButton(onPressed: submitLoan, style: ElevatedButton.styleFrom(backgroundColor: EmployeeUi.primary, foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 54), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), child: const Text("Submit Loan Request", style: TextStyle(fontWeight: FontWeight.bold))),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

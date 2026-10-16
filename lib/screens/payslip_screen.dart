@@ -1,43 +1,125 @@
-import 'dart:io';
-import 'dart:math';
-import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:printing/printing.dart';
-import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:pdf/widgets.dart' as pw;
-import 'package:pdf/pdf.dart';
-import 'package:universal_html/html.dart' as html; // web fallback
-import '../widgets/skeleton_layouts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:open_filex/open_filex.dart';
+import '../core/api/api_client.dart';
+import '../core/payslip_files.dart';
+import '../repositories/employee_repository.dart';
+import '../repositories/organization_repository.dart';
+import '../repositories/payslip_repository.dart';
+import '../widgets/skeleton_layouts.dart';
 import 'dashboard_screen.dart';
 import 'leaves_screen.dart';
 import 'attendance_screen.dart';
-import '../widgets/bottom_nav_toffy_button.dart';
 
 import '../widgets/app_drawer.dart';
 import '../widgets/drawer_route.dart';
 import '../widgets/employee_ui.dart';
-import 'package:open_filex/open_filex.dart';
-import 'package:flutter/services.dart' show rootBundle;
 
-import 'dart:convert';
+/// Fixed texts for failures: the server's own text is never shown.
+const String kPayslipListFailedMessage =
+    "Couldn't load your payslips. Please try again.";
+const String kPayslipPdfFailedMessage =
+    "Couldn't prepare the payslip PDF. Please try again.";
+
+/// The server refuses a payslip that is not the caller's own, is not released, or whose salary the caller may not read,
+/// and answers all of those the same way (403) so that payslip ids cannot be probed.
+const String kPayslipForbiddenMessage =
+    "You don't have access to this payslip. Please contact HR if you think this is a mistake.";
+const String kPayslipPdfNotAvailableMessage =
+    "This payslip isn't available right now. Please contact HR.";
+const String kPayslipSavedNoViewerMessage =
+    "Payslip saved, but no app on this device could open it. Install a PDF viewer and try again.";
+
+/// What the employee sees when the PDF of a payslip could not be retrieved. Never the server's own text.
+String payslipPdfErrorMessage(Object e) {
+  if (e is ApiException) {
+    if (e.isNetworkError)
+      return 'Network problem. Check your connection and try again.';
+    if (e.isUnauthorized) return 'Session expired. Please sign in again.';
+    if (e.isForbidden) return kPayslipForbiddenMessage;
+    if (e.isNotFound) return kPayslipPdfNotAvailableMessage;
+  }
+  return kPayslipPdfFailedMessage;
+}
+
+/// The payslip was retrieved and saved, but the device could not open it.
+class PayslipOpenFailedException implements Exception {
+  const PayslipOpenFailedException();
+}
+
+/// What a period with no payslip shows. The server only lists payslips released to the employee, so "not
+/// released" and "not generated" look the same to the app by design.
+const String kPayslipNoneForPeriodMessage =
+    'No payslip is available for this month and year.';
+
+/// The server lists at most the 12 most recent released payslips and has no paging for it, so a period older than
+/// the oldest one listed (when the list is full) is not shown as "none": older payslips may exist.
+const int kPayslipListCap = 12;
+const String kPayslipOlderMessage =
+    'Only your 12 most recent released payslips can be shown here. An older payslip may exist; please contact HR for it.';
+const String kPayslipFuturePeriodMessage =
+    'Payslip not processed for this month and year.';
+
+/// Saves a downloaded payslip PDF and returns where it went (the default also opens it).
+typedef PayslipFileSaver =
+    Future<String> Function(PayslipPdf pdf, {required bool open});
+
+/// Payslip PDFs are written, unencrypted, to the app's private temporary directory (see [PayslipFiles]): other apps
+/// cannot read it, but the files are NOT encrypted. They are deleted by the app after a delay once opened, when stale
+/// at app start, and at sign-out; none of that is guaranteed (see [PayslipFiles] for the limits). The file is not
+/// deleted right after it is opened, because the viewer may not have read it yet.
+Future<String> _saveAndOpenPdf(PayslipPdf pdf, {required bool open}) async {
+  final files = PayslipFiles.instance;
+  final path = await files.save(pdf.bytes, pdf.fileName);
+  try {
+    if (open) {
+      final result = await OpenFilex.open(path);
+      if (result.type != ResultType.done) throw const PayslipOpenFailedException();
+    }
+  } finally {
+    files.scheduleDelete(path);
+  }
+  return path;
+}
+
+/// Saves a copy of [pdf] where the employee chooses (the system "save as" dialog), so it outlives the app's private
+/// cache. True only when a file was actually written; false when the dialog was cancelled.
+typedef PayslipFileExporter = Future<bool> Function(PayslipPdf pdf);
+
+Future<bool> _exportPdf(PayslipPdf pdf) async {
+  final path = await FilePicker.platform.saveFile(
+    dialogTitle: 'Save payslip',
+    fileName: safePayslipFileName(pdf.fileName),
+    bytes: pdf.bytes,
+    type: FileType.custom,
+    allowedExtensions: const ['pdf'],
+  );
+  return path != null;
+}
 
 class PayslipScreen extends StatefulWidget {
   final String userEmail;
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
+  final EmployeeRepository? employeeRepository;
+  final OrganizationRepository? organizationRepository;
+  final PayslipRepository? payslipRepository;
+  final PayslipFileSaver? fileSaver;
+  final PayslipFileExporter? fileExporter;
 
   const PayslipScreen({
     Key? key,
     required this.userEmail,
     required this.userData,
     required this.fetchHrmsContext,
+    this.employeeRepository,
+    this.organizationRepository,
+    this.payslipRepository,
+    this.fileSaver,
+    this.fileExporter,
   }) : super(key: key);
 
   @override
@@ -45,1517 +127,340 @@ class PayslipScreen extends StatefulWidget {
 }
 
 class _PayslipScreenState extends State<PayslipScreen> {
-  final supabase = Supabase.instance.client;
+  late final EmployeeRepository _employees =
+      widget.employeeRepository ?? EmployeeRepository();
+  late final OrganizationRepository _orgs =
+      widget.organizationRepository ?? OrganizationRepository();
+  late final PayslipRepository _payslips =
+      widget.payslipRepository ?? PayslipRepository();
+  late final PayslipFileSaver _saveFile = widget.fileSaver ?? _saveAndOpenPdf;
+  late final PayslipFileExporter _exportFile = widget.fileExporter ?? _exportPdf;
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 3; // Payslip tab index
 
   bool isLoading = true;
-  bool isError = false;
   String? errorMsg;
-  String? infoMsg;
-  String? payrollCycleId;
   int selectedMonth = DateTime.now().month;
   int selectedYear = DateTime.now().year;
   Map<String, dynamic>? employee;
   Map<String, dynamic>? organization;
-  Map<String, dynamic>?
-  payslip; // stored or computed map for the selected period
-  List<Map<String, dynamic>> salaryConfig = [];
-  List<Map<String, dynamic>> professionalTaxSlabs = [];
-  Map<String, dynamic>? eligibilityRow;
-  Map<String, dynamic>? taxSelection;
-  double monthlySalary = 0.0;
-  bool isFuturePeriod = false;
-  bool isAccessGranted = false;
-  // PDF cache (fonts/logo)
-  pw.Font? _pdfReg;
-  pw.Font? _pdfBold;
-  Uint8List? _cachedLogoBytes;
 
-  // -------------------------
-  // Perf caches (never reload after first fetch)
-  // -------------------------
-  bool _employeeLoaded = false;
-  bool _organizationLoaded = false;
-  bool _globalsLoaded = false;
-  bool _latestPeriodResolved = false;
-  bool _leavesLoaded = false;
-  List<Map<String, dynamic>> _cachedLeaves = [];
-  final Map<String, List<dynamic>> _holidaysCache = {}; // key: 'YYYY-MM'
-  final Map<String, Map<String, dynamic>?> _taxSelectionCache = {}; // key: FY
+  /// The payslips the server has released to this employee; null until loaded or when loading failed.
+  List<PayslipSummary>? released;
+  bool releasedFailed = false;
+
+  /// The released payslip listed for the selected period, if any. Nothing is requested when a period is chosen: the
+  /// payslip is only fetched (as a PDF, `GET /reports/payslip-pdf?payslipId=`) when the employee asks to view or save
+  /// it, and every fetch is authorized and audited by the server.
+  PayslipSummary? selected;
+
+  /// The PDF last fetched for [_pdfFor], kept so a second action on the same payslip does not fetch it again.
+  PayslipPdf? _pdf;
+  String? _pdfFor;
+  bool isFuturePeriod = false;
+  bool _downloading = false;
 
   @override
   void initState() {
-
     super.initState();
     _initialize();
   }
-
   // -------------------------
-  // Initialization
+  // Loading (employee, organization, released payslips, the selected payslip)
   // -------------------------
   Future<void> _initialize() async {
     setState(() {
       isLoading = true;
-      isError = false;
       errorMsg = null;
-      infoMsg = null;
     });
-
     try {
-      // 1) Employee is a prerequisite for org/globals/latest-period.
-      // Kick off PDF fonts + logo URL resolve in parallel with employee load.
-      final fontsFuture = Future.wait([
-        rootBundle.load('fonts/Roboto-Regular.ttf'),
-        rootBundle.load('fonts/Roboto-Bold.ttf'),
-      ]);
-
-      print("STEP 1 - loadEmployee");
-      await _loadEmployee();
-      print("STEP 1 DONE");
-
-      // 2) Organization + latest released period can run in parallel.
-      print("STEP 2 - loadOrganization");
-      await _loadOrganization();
-      print("STEP 2 DONE");
-
-      // 3) Globals depend on organization; period processing is independent
-      // of globals so run them in parallel.
-      print("STEP 3 - fetchGlobals");
-      await _fetchGlobals();
-      print("STEP 3 DONE");
-
-      // 4) Finish font + logo work (font bytes were already downloading).
-      final fontData = await fontsFuture;
-      _pdfReg = pw.Font.ttf(fontData[0]);
-      _pdfBold = pw.Font.ttf(fontData[1]);
-
-      final logoUrl = await _resolveLogoPublicUrl();
-      _cachedLogoBytes = await _getLogoBytes(logoUrl);
-    } catch (e, st) {
-      debugPrint('init error: $e\n$st');
+      employee = await _employees.getMe();
+    } catch (_) {
+      // Never show the server's text.
+      if (!mounted) return;
       setState(() {
-        isError = true;
-        errorMsg = e.toString();
-      });
-    } finally {
-      if (mounted) setState(() => isLoading = false);
-    }
-  }
-
-
-  Future<void> _loadEmployee() async {
-    if (_employeeLoaded && employee != null) return;
-    final user = supabase.auth.currentUser;
-
-    if (user == null) {
-      throw Exception("User not logged in");
-    }
-    final userData = await supabase
-        .from('employee_records')
-        .select()
-        .eq('user_id', user.id) // ✅ CHANGE HERE
-        .limit(1)
-        .maybeSingle();
-
-    if (userData == null) {
-      throw Exception('Employee not found');
-    }
-
-    employee = Map<String, dynamic>.from(userData);
-
-    /// decrypt employee sensitive fields
-    final session = supabase.auth.currentSession;
-
-    if (session == null || session.accessToken == null) {
-      throw Exception("User not logged in. Please login again.");
-    }
-
-    final decrypted = await supabase.functions.invoke(
-      'salary-encryption',
-      body: {
-        'action': 'decrypt',
-        'table': 'employee_records',
-        'record_id': employee!['id'],
-      },
-      headers: {
-        'Authorization': 'Bearer ${session.accessToken}', // ✅ ADD THIS
-      },
-    );
-
-    final body = decrypted.data is String
-        ? jsonDecode(decrypted.data)
-        : decrypted.data;
-
-    final decryptedBody = Map<String, dynamic>.from(body ?? {});
-
-    if (decryptedBody['success'] == true) {
-      final decryptedData = Map<String, dynamic>.from(
-        decryptedBody['data'] ?? {},
-      );
-      employee = {...employee!, ...decryptedData};
-    }
-
-    final rawAnnual =
-        (employee?['salary'] ?? employee?['annual_salary'])?.toString() ?? '0';
-
-    monthlySalary = (double.tryParse(rawAnnual) ?? 0) / 12;
-    _employeeLoaded = true;
-  }
-
-
-  Future<void> _loadPayrollCycle(int month, int year) async {
-    if (employee == null) return;
-
-    final cycle = await supabase
-        .from('payroll_cycles')
-        .select('id,status')
-        .eq('organization_id', employee!['organization_id'])
-        .eq('month', month)
-        .eq('year', year)
-        .limit(1)
-        .maybeSingle();
-
-    payrollCycleId = cycle?['id'];
-  }
-
-  Future<void> _loadOrganization() async {
-    if (_organizationLoaded && organization != null) return;
-    if (employee == null) return;
-    final orgData = await supabase
-        .from('organizations')
-        .select()
-        .eq('id', employee!['organization_id'])
-        .limit(1)
-        .maybeSingle();
-    if (orgData != null) {
-      organization = Map<String, dynamic>.from(orgData as Map);
-    }
-    _organizationLoaded = true;
-  }
-
-
-  Future<void> _fetchGlobals() async {
-    if (_globalsLoaded) return;
-    if (organization == null) return;
-
-    final results = await Future.wait([
-      supabase
-          .from('salary_configurations')
-          .select()
-          .eq('organization_id', organization!['id'])
-          .eq('enabled', true),
-      supabase
-          .from('professional_tax_slabs')
-          .select()
-          .eq('organization_id', organization!['id']),
-    ]);
-
-    final cfg = results[0];
-    salaryConfig = cfg != null
-        ? List<Map<String, dynamic>>.from(cfg as List)
-        : [];
-
-    final pTax = results[1];
-    professionalTaxSlabs = pTax != null
-        ? List<Map<String, dynamic>>.from(pTax as List)
-        : [];
-    professionalTaxSlabs.sort(
-          (a, b) => ((a['min_amount'] ?? 0) as num).compareTo(
-        (b['min_amount'] ?? 0) as num,
-      ),
-    );
-    _globalsLoaded = true;
-  }
-
-
-  Future<void> _fetchLatestReleasedPeriod() async {
-    if (_latestPeriodResolved) return;
-    if (employee == null) return;
-    _latestPeriodResolved = true;
-
-    final latest = await supabase
-
-        .from('payroll_cycles')
-        .select()
-        .eq('organization_id', employee!['organization_id'])
-        .eq('status', 'released')
-        .order('year', ascending: false)
-        .order('month', ascending: false)
-        .limit(1)
-        .maybeSingle();
-
-    if (latest != null) {
-      selectedMonth = latest['month'];
-      selectedYear = latest['year'];
-    }
-  }
-
-  Future<void> _loadTaxSelectionForFY(int month, int year) async {
-    if (employee == null) return;
-    final fy = _inferFinancialYear(year, month);
-    if (_taxSelectionCache.containsKey(fy)) {
-      taxSelection = _taxSelectionCache[fy];
-      return;
-    }
-    final res = await supabase
-        .from('tax_regime_selections')
-        .select()
-        .eq('employee_id', employee!['id'])
-        .eq('financial_year', fy)
-        .limit(1)
-        .maybeSingle();
-    final mapped = res != null ? Map<String, dynamic>.from(res as Map) : null;
-    _taxSelectionCache[fy] = mapped;
-    if (mapped != null) taxSelection = mapped;
-  }
-
-
-  // -------------------------
-  // Period change handling
-  // -------------------------
-  Future<void> _processPeriodChange(int month, int year) async {
-    setState(() {
-      isLoading = true;
-      isError = false;
-      errorMsg = null;
-      infoMsg = null;
-      payslip = null;
-      isFuturePeriod = false;
-      isAccessGranted = false;
-    });
-    final now = DateTime.now();
-    final selectedDate = DateTime(year, month);
-    final currentMonthDate = DateTime(now.year, now.month);
-    if (selectedDate.isAfter(currentMonthDate)) {
-      setState(() {
-        isFuturePeriod = true;
-        infoMsg = 'Payslip not processed for this month and year.';
+        errorMsg = "Couldn't load your details. Please try again.";
         isLoading = false;
       });
       return;
     }
-    // Run access check + payroll cycle load in parallel (both are independent).
-    final results = await Future.wait([
-      _checkEmployeePayslipAccess(month, year),
-      _loadPayrollCycle(month, year),
-    ]);
-    final access = results[0] as bool;
-    setState(() => isAccessGranted = access);
-    if (!access) {
-      setState(() {
-        infoMsg = 'Payslip not released for this month and year.';
-        isLoading = false;
-      });
-      return;
-    }
-
-    if (payrollCycleId == null) {
-      setState(() {
-        infoMsg = 'Payroll cycle not found for this period.';
-        isLoading = false;
-      });
-      return;
-    }
-
-
-    final stored = await _fetchStoredPayslip(month, year);
-
-    if (stored == null) {
-      setState(() {
-        infoMsg = 'Payslip not generated yet.';
-        isLoading = false;
-      });
-      return;
-    }
-
-    /// decrypt payslip
-    final session = supabase.auth.currentSession;
-
-    // ✅ ADD THESE TWO LINES HERE
-    print("USER => ${supabase.auth.currentUser}");
-    print("TOKEN => ${supabase.auth.currentSession?.accessToken}");
-
-    if (session == null || session.accessToken == null) {
-      throw Exception("User not logged in. Please login again.");
-    }
-
-    if (session == null || session.accessToken == null) {
-      throw Exception("Session expired. Please login again.");
-    }
-
-    final decryptedRes = await supabase.functions.invoke(
-      'salary-encryption',
-      body: {
-        'action': 'decrypt',
-        'table': 'payslips',
-        'record_id': stored['id'],
-        'organization_id': employee!['organization_id'],
-      },
-      headers: {'Authorization': 'Bearer ${session!.accessToken}'},
-    );
-
-    final body = decryptedRes.data is String
-        ? jsonDecode(decryptedRes.data)
-        : decryptedRes.data;
-
-    final decryptedBody = Map<String, dynamic>.from(body ?? {});
-
-    if (decryptedBody['success'] != true) {
-      throw Exception("Payslip decryption failed");
-    }
-
-    final payslipData = Map<String, dynamic>.from(decryptedBody['data'] ?? {});
-
-    /// decrypt line items — run attendance compute IN PARALLEL with batch decrypt
-    final lineItems = stored['payslip_line_items'] ?? [];
-
-    Future<dynamic> lineItemsFuture;
-    if (lineItems.isNotEmpty) {
-      final ids = lineItems.map((e) => e['id']).toList();
-
-      final session2 = supabase.auth.currentSession;
-      if (session2 == null || session2.accessToken == null) {
-        throw Exception("Session expired. Please login again.");
-      }
-
-      lineItemsFuture = supabase.functions
-          .invoke(
-        'salary-encryption',
-        body: {
-          'action': 'decrypt-batch',
-          'table': 'payslip_line_items',
-          'record_ids': ids,
-          'organization_id': employee!['organization_id'],
-        },
-        headers: {'Authorization': 'Bearer ${session2.accessToken}'},
-      )
-          .then((batch) => {'batch': batch, 'ids': ids});
-    } else {
-      lineItemsFuture = Future.value(null);
-    }
-
-    final parallel = await Future.wait([
-      _computeAttendance(month, year),
-      lineItemsFuture,
-    ]);
-
-    final attendance = parallel[0] as Map<String, int>;
-    final lineItemsResult = parallel[1];
-
-    if (lineItemsResult != null) {
-      final batch = (lineItemsResult as Map)['batch'];
-      final ids = (lineItemsResult)['ids'] as List;
-      final batchBodyRaw = batch.data is String
-          ? jsonDecode(batch.data)
-          : batch.data;
-      final batchBody = Map<String, dynamic>.from(batchBodyRaw ?? {});
-
-      if (batchBody['success'] == true) {
-        final decryptedItemsMap = Map<String, dynamic>.from(
-          batchBody['data'] ?? {},
-        );
-        final decryptedItems = ids
-            .map((id) => decryptedItemsMap[id.toString()])
-            .whereType<Map<String, dynamic>>()
-            .toList();
-        payslipData['payslip_line_items'] = decryptedItems;
-      }
-    }
-
-    final enrichedPayslip = {...payslipData, ...attendance};
-
-    setState(() {
-      payslip = enrichedPayslip;
-      isLoading = false;
-    });
-  }
-
-  Future<bool> _checkEmployeePayslipAccess(int month, int year) async {
-    if (employee == null) return false;
-
-    // 1️⃣ Check payroll cycle status
-    final cycle = await supabase
-        .from('payroll_cycles')
-        .select('status')
-        .eq('organization_id', employee!['organization_id'])
-        .eq('month', month)
-        .eq('year', year)
-        .limit(1)
-        .maybeSingle();
-
-    if (cycle != null &&
-        (cycle['status'] == 'released' || cycle['status'] == 'finalized')) {
-      return true;
-    }
-
-    // 2️⃣ Check individual override access
-    final override = await supabase
-        .from('employee_payroll_access')
-        .select('payslip_access_granted')
-        .eq('employee_id', employee!['id'])
-        .eq('month', month)
-        .eq('year', year)
-        .limit(1)
-        .maybeSingle();
-
-    return override?['payslip_access_granted'] == true;
-  }
-
-  Future<Map<String, dynamic>?> _fetchStoredPayslip(int month, int year) async {
-    if (employee == null) return null;
-
-    final res = await supabase
-        .from('payslips')
-        .select('*')
-        .eq('employee_id', employee!['id'])
-        .eq('month', month)
-        .eq('year', year)
-        .limit(1)
-        .maybeSingle();
-
-    if (res == null) return null;
-
-    final lineItems = await supabase
-        .from('payslip_line_items')
-        .select()
-        .eq('payslip_id', res['id']);
-
-    res['payslip_line_items'] = lineItems;
-
-    return Map<String, dynamic>.from(res);
-  }
-
-  // -------------------------
-  // Robust upsert for payslips with RLS awareness
-  // -------------------------
-  Future<void> _savePayslipToDbRobust(Map<String, dynamic> computed) async {
-    if (computed.isEmpty) return;
-    var payload = Map<String, dynamic>.from(computed);
-    // Remove nested objects and empty lists
-    payload.removeWhere((k, v) => v is Map || (v is List && v.isEmpty));
+    // Branding is cosmetic: a failure just means no name/logo.
     try {
-      await supabase.from('payslips').upsert([
-        payload,
-      ], onConflict: 'employee_id,organization_id,month,year');
-      return;
-    } catch (e) {
-      final errStr = e.toString();
-      debugPrint('Save payslip initial error: $errStr');
-      // If blocked by RLS/permission, silently return (we still allow viewing & downloads)
-      if (errStr.toLowerCase().contains('row-level security') ||
-          errStr.contains('42501') ||
-          errStr.toLowerCase().contains('forbidden')) {
-        debugPrint('Upsert blocked by RLS or permission: $errStr');
-        return;
-      }
+      organization = await _orgs.getOrganization();
+    } catch (_) {
+      organization = null;
     }
-    final unsupportedKeys = <String>{};
-    for (int attempt = 0; attempt < 8; attempt++) {
-      try {
-        await supabase.from('payslips').upsert([
-          payload,
-        ], onConflict: 'employee_id,organization_id,month,year');
-        return;
-      } catch (err) {
-        final errStr = err.toString();
-        debugPrint('Upsert retry error: $errStr');
-        final m = RegExp(
-          r"Could not find the '([^']+)' column",
-        ).firstMatch(errStr);
-        if (m != null) {
-          final col = m.group(1);
-          if (col != null && payload.containsKey(col)) {
-            unsupportedKeys.add(col);
-            payload.remove(col);
-            debugPrint(
-              'Removed unsupported payslip column: $col and retrying upsert',
-            );
-            continue;
-          }
-        }
-        final m2 = RegExp(
-          r"the '([^']+)' column of 'payslips'",
-        ).firstMatch(errStr);
-        if (m2 != null) {
-          final col = m2.group(1);
-          if (col != null && payload.containsKey(col)) {
-            unsupportedKeys.add(col);
-            payload.remove(col);
-            debugPrint(
-              'Removed unsupported payslip column: $col and retrying upsert',
-            );
-            continue;
-          }
-        }
-        if (errStr.toLowerCase().contains('row-level security') ||
-            errStr.contains('42501') ||
-            errStr.toLowerCase().contains('forbidden')) {
-          debugPrint('Upsert blocked by RLS or permission: $errStr');
-          break;
-        }
-        debugPrint('Unrecoverable upsert error: $errStr');
-        break;
+    await _loadReleased();
+    if (!mounted) return;
+    setState(() => isLoading = false);
+    await _processPeriodChange(selectedMonth, selectedYear);
+  }
+
+  Future<void> _loadReleased() async {
+    try {
+      final list = await _payslips.payslips();
+      released = list;
+      releasedFailed = false;
+      // Start on the latest released payslip (the server lists them newest first).
+      if (list.isNotEmpty) {
+        selectedMonth = list.first.month;
+        selectedYear = list.first.year;
       }
-    }
-    if (unsupportedKeys.isNotEmpty) {
-      debugPrint('Final upsert attempted without keys: $unsupportedKeys');
+    } catch (_) {
+      released = null;
+      releasedFailed = true;
     }
   }
 
-  // -------------------------
-  // Resolve logo URL and fetch bytes (cached)
-  // -------------------------
-  Future<String> _resolveLogoPublicUrl() async {
-    final raw = organization?['logo_url']?.toString();
-    if (raw == null || raw.isEmpty) return '';
-    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
-    try {
-      final pub = supabase.storage.from('company-logos').getPublicUrl(raw);
-      if (pub != null && pub.startsWith('http')) return pub;
-    } catch (e) {
-      debugPrint('getPublicUrl error: $e');
-    }
-    return raw;
-  }
-
-  Future<Uint8List?> _getLogoBytes(String? url) async {
-    try {
-      if (url == null || url.isEmpty) return null;
-      if (!url.startsWith('http')) {
-        url = await _resolveLogoPublicUrl();
-      }
-      final resp = await http.get(Uri.parse(url));
-      if (resp.statusCode == 200) return resp.bodyBytes;
-    } catch (e) {
-      debugPrint('logo fetch error: $e');
+  PayslipSummary? _summaryFor(int month, int year) {
+    for (final p in released ?? const <PayslipSummary>[]) {
+      if (p.month == month && p.year == year) return p;
     }
     return null;
   }
 
-  // -------------------------
-  // Helpers
-  // -------------------------
-  String _inferFinancialYear(int year, int month) {
-    if (month < 4) return '${year - 1}-$year';
-    return '$year-${year + 1}';
+  /// The list is full (the server's cap) and [month]/[year] is older than its oldest entry: the payslip may exist
+  /// but was cut off by the cap. [released] is sorted newest first.
+  bool _isBeyondListedHistory(int month, int year) {
+    final list = released;
+    if (list == null ||
+        list.length < kPayslipListCap ||
+        _summaryFor(month, year) != null)
+      return false;
+    final oldest = list.last;
+    return year * 12 + month < oldest.year * 12 + oldest.month;
   }
 
-  double _computeProfessionalTax(double monthlySalary) {
-    if (professionalTaxSlabs.isEmpty) return 0.0;
-    for (final slab in professionalTaxSlabs) {
-      final minA = ((slab['min_amount'] ?? 0) as num).toDouble();
-      final maxA = (slab['max_amount'] == null)
-          ? double.infinity
-          : ((slab['max_amount'] ?? double.infinity) as num).toDouble();
-      final amt = ((slab['amount'] ?? 0) as num).toDouble();
-      if (monthlySalary >= minA && monthlySalary <= maxA) {
-        return amt.roundToDouble();
+  /// A period change only selects what the server has listed for it: no request is made. (The payslip itself is read
+  /// with `GET /reports/payslip-pdf?payslipId=` when the employee asks to view or save it.)
+  Future<void> _processPeriodChange(int month, int year) async {
+    final now = DateTime.now();
+    final future = DateTime(year, month).isAfter(DateTime(now.year, now.month));
+    final summary = future || releasedFailed ? null : _summaryFor(month, year);
+    setState(() {
+      isFuturePeriod = future;
+      selected = summary;
+      if (_pdfFor != summary?.id) {
+        _pdf = null;
+        _pdfFor = null;
       }
-    }
-    return 0.0;
-  }
-
-  String _formatCurrencyDouble(double v) {
-    try {
-      final nf = NumberFormat.currency(
-        locale: 'en_IN',
-        symbol: ' ',
-        decimalDigits: 2,
-      );
-      return nf.format(v);
-    } catch (_) {
-      return v.toStringAsFixed(2);
-    }
-  }
-
-  String _formatDate(String raw) {
-    try {
-      final dt = DateTime.parse(raw);
-      return DateFormat('dd MMM yyyy').format(dt);
-    } catch (_) {
-      return raw;
-    }
+    });
   }
 
   // -------------------------
-  // Attendance calculation
+  // Downloads
   // -------------------------
-  Future<Map<String, int>> _computeAttendance(int month, int year) async {
-    if (employee == null) return {};
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
 
-    /// 1️⃣ Total Monthly Days
-    final int totalDays = DateUtils.getDaysInMonth(year, month);
-
-    /// 2️⃣ Weekly Offs
-    int weeklyOffs = 0;
-    final workingDaysPerWeek = organization?['working_days_per_week'] ?? 5;
-
-    final weeklyOffDays = workingDaysPerWeek == 6
-        ? [DateTime.sunday]
-        : [DateTime.saturday, DateTime.sunday];
-
-    for (int day = 1; day <= totalDays; day++) {
-      final date = DateTime(year, month, day);
-      if (weeklyOffDays.contains(date.weekday)) {
-        weeklyOffs++;
-      }
+  /// The selected payslip's PDF, fetched once and kept. A failure is a [ApiException] etc. for the caller to word.
+  Future<PayslipPdf> _pdfForSelected() async {
+    final s = selected!;
+    final cached = _pdf;
+    if (cached != null && _pdfFor == s.id) return cached;
+    final pdf = await _payslips.pdf(s.id);
+    if (mounted && selected?.id == s.id) {
+      setState(() {
+        _pdf = pdf;
+        _pdfFor = s.id;
+      });
     }
+    return pdf;
+  }
 
-    /// 3️⃣ Holidays
-    /// 3️⃣ + 4️⃣ Holidays and Leaves — fetched in parallel, both cached.
-    final holidayKey =
-        '$year-${month.toString().padLeft(2, '0')}';
-    final needHolidays = !_holidaysCache.containsKey(holidayKey);
-    final needLeaves = !_leavesLoaded;
-
-    final futures = <Future<dynamic>>[];
-    futures.add(needHolidays
-        ? supabase
-        .from('holidays')
-        .select('date')
-        .eq('organization_id', employee!['organization_id'])
-        .gte('date', '$year-${month.toString().padLeft(2, '0')}-01')
-        .lte(
-      'date',
-      '$year-${month.toString().padLeft(2, '0')}-${totalDays.toString().padLeft(2, '0')}',
-    )
-        : Future.value(_holidaysCache[holidayKey]));
-    futures.add(needLeaves
-        ? supabase
-        .from('leave_applications')
-        .select(
-      'from_date,to_date,leave_type,status,leave_duration_type,half_day_session',
-    )
-        .eq('employee_id', employee!['id'])
-        .inFilter('status', ['approved', 'manager_approved'])
-        : Future.value(_cachedLeaves));
-
-    final results = await Future.wait(futures);
-    final holidays = results[0];
-    if (needHolidays) {
-      _holidaysCache[holidayKey] =
-      holidays != null ? List<dynamic>.from(holidays as List) : <dynamic>[];
+  /// The selected payslip as a PDF from the server, saved to the app's private folder and opened. Success is reported
+  /// only after the PDF was retrieved, validated and written; a device that cannot open it is told so. Whatever the
+  /// PDF says (including a net pay of 0, which can be genuine) is the server's: it is neither judged nor changed here.
+  /// A 403 here is the server's real answer for this payslip (it decides ownership, release and salary access).
+  Future<void> _downloadSingle() async {
+    if (selected == null || _downloading) return;
+    setState(() => _downloading = true);
+    try {
+      final pdf = await _pdfForSelected();
+      await _saveFile(pdf, open: true);
+      _toast('Payslip saved.');
+    } on PayslipOpenFailedException {
+      _toast(kPayslipSavedNoViewerMessage);
+    } catch (e) {
+      _toast(payslipPdfErrorMessage(e));
+    } finally {
+      if (mounted) setState(() => _downloading = false);
     }
-    final int holidayCount = holidays?.length ?? 0;
+  }
 
-    /// 4️⃣ Leaves (Paid vs LOP)
-    double paidLeaveDays = 0;
-    double lopDays = 0;
-
-    final leaves = results[1];
-    if (needLeaves) {
-      _cachedLeaves = leaves != null
-          ? List<Map<String, dynamic>>.from(leaves as List)
-          : <Map<String, dynamic>>[];
-      _leavesLoaded = true;
+  /// Saves a copy of the selected payslip where the employee chooses (system "save as"). Reported only when written.
+  Future<void> _saveSelectedCopy() async {
+    if (selected == null || _downloading) return;
+    setState(() => _downloading = true);
+    try {
+      final pdf = await _pdfForSelected();
+      if (await _exportFile(pdf)) _toast('Payslip saved.');
+    } catch (e) {
+      _toast(payslipPdfErrorMessage(e));
+    } finally {
+      if (mounted) setState(() => _downloading = false);
     }
-    for (final leave in leaves ?? []) {
-      final leaveName = (leave['leave_type'] ?? '').toString().toLowerCase();
+  }
 
-      final bool isLop =
-          leaveName.contains('lop') ||
-          leaveName.contains('loss of pay') ||
-          leaveName.contains('unpaid');
-
-      final from = DateTime.parse(leave['from_date']);
-      final to = DateTime.parse(leave['to_date']);
-      final durationType = (leave['leave_duration_type'] ?? 'full_day')
-          .toString()
-          .toLowerCase();
-
-      for (var d = from; !d.isAfter(to); d = d.add(const Duration(days: 1))) {
-        if (d.month == month && d.year == year) {
-          final dayValue = durationType == 'half_day' ? 0.5 : 1.0;
-
-          if (isLop) {
-            lopDays += dayValue;
-          } else {
-            paidLeaveDays += dayValue;
-          }
+  /// The newest [count] payslips the server has released, each fetched as its own PDF (nothing is merged or recomputed
+  /// on the device). They are held in memory and offered in a list where each one can be opened or saved to a place
+  /// the employee chooses: the app's private cache is not reachable by the employee and is cleaned up after a while.
+  Future<void> _downloadRecent(int count) async {
+    if (_downloading) return;
+    final wanted = (released ?? const <PayslipSummary>[]).take(count).toList();
+    if (wanted.isEmpty) {
+      _toast('No released payslips to download.');
+      return;
+    }
+    setState(() => _downloading = true);
+    final ready = <PayslipPdf>[];
+    Object? firstError;
+    try {
+      for (final s in wanted) {
+        try {
+          ready.add(await _payslips.pdf(s.id));
+        } catch (e) {
+          firstError ??= e;
+          // A refusal (403) or an expired session will not get better for the next payslip.
+          if (e is ApiException && (e.isForbidden || e.isUnauthorized)) break;
         }
-      }
-    }
-
-    /// 5️⃣ Weekly Offs + Paid Leaves + Holidays
-    final double weeklyOffsLeavesHolidays =
-        weeklyOffs + paidLeaveDays + holidayCount;
-
-    /// 6️⃣ Total Working Days
-    final double totalWorkingDays =
-        totalDays - weeklyOffsLeavesHolidays - lopDays;
-
-    /// 7️⃣ Pay Days
-    /// Pay Days = Calendar Days - LOP Days
-    final double payDays = totalDays - lopDays;
-
-    return {
-      'total_monthly_days': totalDays,
-      'effective_work_days': totalWorkingDays.round(),
-      'weekly_offs_leaves_holidays': weeklyOffsLeavesHolidays.round(),
-      'lop_absent': lopDays.round(),
-      'pay_days': payDays.round(),
-    };
-  }
-
-  // -------------------------
-  // Compute single payslip
-  // -------------------------
-
-  static bool eligibility_row_bool(Map<String, dynamic>? row) {
-    if (row == null) return false;
-    return (row['is_pf_eligible'] == true ||
-        row['is_pf_eligible']?.toString() == 'true');
-  }
-
-  static bool eligibility_row_bool_esi(Map<String, dynamic>? row) {
-    if (row == null) return false;
-    return (row['is_esi_eligible'] == true ||
-        row['is_esi_eligible']?.toString() == 'true');
-  }
-
-  // PDF generation helpers (single MultiPage for bulk & single)
-  pw.Widget _smallStatBoxPw(String title, String value, pw.Font f, pw.Font bf) {
-    return pw.Expanded(
-      child: pw.Container(
-        padding: const pw.EdgeInsets.symmetric(vertical: 10),
-        decoration: pw.BoxDecoration(
-          border: pw.Border.all(color: PdfColors.grey300),
-          borderRadius: pw.BorderRadius.circular(6),
-        ),
-        child: pw.Column(
-          children: [
-            pw.Text(
-              title,
-              style: pw.TextStyle(
-                font: f,
-                fontSize: 8,
-                color: PdfColors.grey700,
-              ),
-              textAlign: pw.TextAlign.center,
-            ),
-            pw.SizedBox(height: 6),
-            pw.Text(
-              value,
-              style: pw.TextStyle(font: bf, fontSize: 13),
-              textAlign: pw.TextAlign.center,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<Uint8List> _generateMultiPayslipPdfBytes(
-    List<Map<String, dynamic>> pagesData, {
-    Uint8List? logoBytes,
-  }) async {
-    final doc = pw.Document();
-    final nf = NumberFormat.currency(
-      locale: 'en_IN',
-      symbol: '\u20B9',
-      decimalDigits: 2,
-    );
-    final pf = _pdfReg ?? pw.Font.helvetica();
-    final pb = _pdfBold ?? pw.Font.helveticaBold();
-    doc.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.symmetric(horizontal: 28, vertical: 20),
-        theme: pw.ThemeData(defaultTextStyle: pw.TextStyle(font: pf)),
-        build: (context) {
-          final List<pw.Widget> widgets = <pw.Widget>[];
-          for (final p in pagesData) {
-            final Map<String, double> earnings = {};
-            final Map<String, double> deductions = {};
-
-            void addIfPresent(
-              Map<String, double> target,
-              String label,
-              dynamic value,
-            ) {
-              final v = double.tryParse((value ?? '0').toString()) ?? 0.0;
-              if (v != 0.0) target[label] = v;
-            }
-
-            addIfPresent(earnings, 'Basic Pay', p['basic_pay']);
-            addIfPresent(earnings, 'HRA', p['hra']);
-            addIfPresent(earnings, 'Special Allowance', p['special_allowance']);
-            addIfPresent(
-              earnings,
-              'Dearness Allowance',
-              p['dearness_allowance'],
-            );
-            addIfPresent(
-              earnings,
-              'Conveyance Allowance',
-              p['conveyance_allowance'],
-            );
-            addIfPresent(earnings, 'Medical Allowance', p['medical_allowance']);
-            addIfPresent(earnings, 'Other Allowances', p['other_allowances']);
-            addIfPresent(earnings, 'Overtime Pay', p['overtime_pay']);
-            addIfPresent(deductions, 'Employee PF', p['pf_employee']);
-            addIfPresent(deductions, 'Employee ESI', p['employee_esi']);
-            addIfPresent(deductions, 'Professional Tax', p['professional_tax']);
-            addIfPresent(deductions, 'TDS/Income Tax', p['tds_income_tax']);
-            addIfPresent(
-              deductions,
-              'Health & Education Cess',
-              p['health_education_cess'],
-            );
-            addIfPresent(
-              deductions,
-              'Excess Leave Deduction',
-              p['excess_leave_deduction'],
-            );
-            addIfPresent(deductions, 'Loan Deduction', p['loan_deduction']);
-            addIfPresent(deductions, 'Other Deductions', p['other_deductions']);
-            final gross =
-                double.tryParse(
-                  (p['gross_salary'] ?? p['total_earnings'] ?? '0').toString(),
-                ) ??
-                0.0;
-            final totalDeductions =
-                double.tryParse((p['total_deductions'] ?? '0').toString()) ??
-                0.0;
-            final net =
-                double.tryParse(
-                  (p['net_pay'] ?? (gross - totalDeductions)).toString(),
-                ) ??
-                0.0;
-            widgets.addAll([
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.Row(
-                    children: [
-                      if (logoBytes != null)
-                        pw.Container(
-                          width: 60,
-                          height: 60,
-                          child: pw.Image(
-                            pw.MemoryImage(logoBytes),
-                            fit: pw.BoxFit.contain,
-                          ),
-                        ),
-                      pw.SizedBox(width: 12),
-
-                      pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.start,
-                        children: [
-                          pw.Text(
-                            organization?['name'] ?? '',
-                            style: pw.TextStyle(font: pb, fontSize: 16),
-                          ),
-
-                          pw.SizedBox(height: 4),
-
-                          pw.Text(
-                            organization?['location'] ?? '',
-                            style: pw.TextStyle(
-                              font: pf,
-                              fontSize: 10,
-                              color: PdfColors.grey700,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-
-                  pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.end,
-                    children: [
-                      pw.Text(
-                        "Payslip",
-                        style: pw.TextStyle(font: pb, fontSize: 16),
-                      ),
-
-                      pw.SizedBox(height: 4),
-
-                      pw.Text(
-                        DateFormat('MMMM yyyy').format(
-                          DateTime(
-                            p['year'] ?? selectedYear,
-                            p['month'] ?? selectedMonth,
-                          ),
-                        ),
-                        style: pw.TextStyle(
-                          font: pf,
-                          fontSize: 10,
-                          color: PdfColors.grey700,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              pw.SizedBox(height: 12),
-              pw.Divider(),
-              pw.Container(
-                padding: const pw.EdgeInsets.all(8),
-                decoration: pw.BoxDecoration(
-                  border: pw.Border.all(color: PdfColors.grey200),
-                  borderRadius: pw.BorderRadius.circular(6),
-                ),
-                child: pw.Column(
-                  children: [
-                    pw.Row(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Expanded(
-                          child: pw.Column(
-                            crossAxisAlignment: pw.CrossAxisAlignment.start,
-                            children: [
-                              pw.Text(
-                                'EMPLOYEE INFORMATION',
-                                style: pw.TextStyle(font: pb, fontSize: 10),
-                              ),
-                              pw.SizedBox(height: 8),
-                              pw.Text(
-                                'Name: ${p['employee_name'] ?? ''}',
-                                style: pw.TextStyle(font: pf, fontSize: 10),
-                              ),
-                              pw.Text(
-                                'Dept: ${p['department'] ?? ''}',
-                                style: pw.TextStyle(font: pf, fontSize: 10),
-                              ),
-                              pw.Text(
-                                'PAN: ${p['pan_number'] ?? '--'}',
-                                style: pw.TextStyle(font: pf, fontSize: 10),
-                              ),
-                            ],
-                          ),
-                        ),
-                        pw.SizedBox(width: 8),
-                        pw.Expanded(
-                          child: pw.Column(
-                            crossAxisAlignment: pw.CrossAxisAlignment.start,
-                            children: [
-                              pw.Text(
-                                'Employee Code: ${p['employee_code'] ?? ''}',
-                                style: pw.TextStyle(font: pf, fontSize: 10),
-                              ),
-                              pw.Text(
-                                'Designation: ${p['designation'] ?? ''}',
-                                style: pw.TextStyle(font: pf, fontSize: 10),
-                              ),
-                              pw.Text(
-                                'UAN: ${p['pf_uan'] ?? '--'}',
-                                style: pw.TextStyle(font: pf, fontSize: 10),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              pw.SizedBox(height: 12),
-              pw.Container(
-                child: pw.Column(
-                  children: [
-                    pw.Text(
-                      'Attendance Summary',
-                      style: pw.TextStyle(font: pb, fontSize: 11),
-                    ),
-                    pw.SizedBox(height: 8),
-                    pw.Row(
-                      children: [
-                        _smallStatBoxPw(
-                          'TOTAL DAYS IN MONTH',
-                          (p['total_monthly_days'] ?? '--').toString(),
-                          pf,
-                          pb,
-                        ),
-                        pw.SizedBox(width: 8),
-                        _smallStatBoxPw(
-                          'TOTAL WORKING DAYS',
-                          (p['effective_work_days'] ?? '--').toString(),
-                          pf,
-                          pb,
-                        ),
-                        pw.SizedBox(width: 8),
-                        _smallStatBoxPw(
-                          'WEEKLY OFFS, LEAVES & HOLIDAYS',
-                          (p['weekly_offs_leaves_holidays'] ?? '--').toString(),
-                          pf,
-                          pb,
-                        ),
-                        pw.SizedBox(width: 8),
-                        _smallStatBoxPw(
-                          'LOP/ABSENT',
-                          (p['lop_absent'] ?? '0').toString(),
-                          pf,
-                          pb,
-                        ),
-                      ],
-                    ),
-                    pw.SizedBox(height: 8),
-                    pw.Row(
-                      children: [
-                        pw.Expanded(
-                          child: pw.Container(
-                            padding: const pw.EdgeInsets.all(8),
-                            decoration: pw.BoxDecoration(
-                              border: pw.Border.all(color: PdfColors.grey200),
-                              borderRadius: pw.BorderRadius.circular(6),
-                            ),
-                            child: pw.Column(
-                              children: [
-                                pw.Text(
-                                  'PAY DAYS',
-                                  style: pw.TextStyle(
-                                    font: pf,
-                                    fontSize: 10,
-                                    color: PdfColors.grey700,
-                                  ),
-                                ),
-                                pw.SizedBox(height: 6),
-                                pw.Text(
-                                  (p['pay_days'] ??
-                                          p['total_monthly_days'] ??
-                                          '--')
-                                      .toString(),
-                                  style: pw.TextStyle(font: pb, fontSize: 12),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              pw.SizedBox(height: 12),
-              pw.Row(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.Expanded(
-                    child: pw.Container(
-                      padding: const pw.EdgeInsets.all(8),
-                      decoration: pw.BoxDecoration(
-                        border: pw.Border.all(color: PdfColors.grey200),
-                        borderRadius: pw.BorderRadius.circular(6),
-                      ),
-                      child: pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.start,
-                        children: [
-                          pw.Container(
-                            padding: const pw.EdgeInsets.symmetric(vertical: 4),
-                            decoration: const pw.BoxDecoration(
-                              border: pw.Border(
-                                bottom: pw.BorderSide(
-                                  color: PdfColors.green,
-                                  width: 1,
-                                ),
-                              ),
-                            ),
-                            child: pw.Text(
-                              'Earnings',
-                              style: pw.TextStyle(
-                                font: pb,
-                                fontSize: 12,
-                                color: PdfColors.green800,
-                              ),
-                            ),
-                          ),
-                          pw.SizedBox(height: 6),
-                          pw.Table(
-                            columnWidths: {
-                              0: pw.FlexColumnWidth(3),
-                              1: pw.FlexColumnWidth(1),
-                            },
-                            children: [
-                              for (final e in earnings.entries)
-                                pw.TableRow(
-                                  children: [
-                                    pw.Padding(
-                                      padding: const pw.EdgeInsets.symmetric(
-                                        vertical: 6,
-                                        horizontal: 4,
-                                      ),
-                                      child: pw.Text(
-                                        e.key,
-                                        style: pw.TextStyle(
-                                          font: pf,
-                                          fontSize: 10,
-                                        ),
-                                      ),
-                                    ),
-                                    pw.Padding(
-                                      padding: const pw.EdgeInsets.symmetric(
-                                        vertical: 6,
-                                        horizontal: 4,
-                                      ),
-                                      child: pw.Text(
-                                        nf.format(e.value),
-                                        style: pw.TextStyle(
-                                          font: pf,
-                                          fontSize: 10,
-                                        ),
-                                        textAlign: pw.TextAlign.right,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              pw.TableRow(
-                                children: [
-                                  pw.Padding(
-                                    padding: const pw.EdgeInsets.symmetric(
-                                      vertical: 6,
-                                      horizontal: 4,
-                                    ),
-                                    child: pw.Text(
-                                      'TOTAL EARNINGS',
-                                      style: pw.TextStyle(
-                                        font: pb,
-                                        fontSize: 10,
-                                      ),
-                                    ),
-                                  ),
-                                  pw.Padding(
-                                    padding: const pw.EdgeInsets.symmetric(
-                                      vertical: 6,
-                                      horizontal: 4,
-                                    ),
-                                    child: pw.Text(
-                                      nf.format(gross),
-                                      style: pw.TextStyle(
-                                        font: pb,
-                                        fontSize: 10,
-                                      ),
-                                      textAlign: pw.TextAlign.right,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  pw.SizedBox(width: 12),
-                  pw.Expanded(
-                    child: pw.Container(
-                      padding: const pw.EdgeInsets.all(8),
-                      decoration: pw.BoxDecoration(
-                        border: pw.Border.all(color: PdfColors.grey200),
-                        borderRadius: pw.BorderRadius.circular(6),
-                      ),
-                      child: pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.start,
-                        children: [
-                          pw.Container(
-                            padding: const pw.EdgeInsets.symmetric(vertical: 4),
-                            decoration: const pw.BoxDecoration(
-                              border: pw.Border(
-                                bottom: pw.BorderSide(
-                                  color: PdfColors.red,
-                                  width: 1,
-                                ),
-                              ),
-                            ),
-                            child: pw.Text(
-                              'Deductions',
-                              style: pw.TextStyle(
-                                font: pb,
-                                fontSize: 12,
-                                color: PdfColors.red800,
-                              ),
-                            ),
-                          ),
-                          pw.SizedBox(height: 6),
-                          pw.Table(
-                            columnWidths: {
-                              0: pw.FlexColumnWidth(3),
-                              1: pw.FlexColumnWidth(1),
-                            },
-                            children: [
-                              for (final d in deductions.entries)
-                                pw.TableRow(
-                                  children: [
-                                    pw.Padding(
-                                      padding: const pw.EdgeInsets.symmetric(
-                                        vertical: 6,
-                                        horizontal: 4,
-                                      ),
-                                      child: pw.Text(
-                                        d.key,
-                                        style: pw.TextStyle(
-                                          font: pf,
-                                          fontSize: 10,
-                                        ),
-                                      ),
-                                    ),
-                                    pw.Padding(
-                                      padding: const pw.EdgeInsets.symmetric(
-                                        vertical: 6,
-                                        horizontal: 4,
-                                      ),
-                                      child: pw.Text(
-                                        nf.format(d.value),
-                                        style: pw.TextStyle(
-                                          font: pf,
-                                          fontSize: 10,
-                                        ),
-                                        textAlign: pw.TextAlign.right,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              pw.TableRow(
-                                children: [
-                                  pw.Padding(
-                                    padding: const pw.EdgeInsets.symmetric(
-                                      vertical: 6,
-                                      horizontal: 4,
-                                    ),
-                                    child: pw.Text(
-                                      'TOTAL DEDUCTIONS',
-                                      style: pw.TextStyle(
-                                        font: pb,
-                                        fontSize: 10,
-                                      ),
-                                    ),
-                                  ),
-                                  pw.Padding(
-                                    padding: const pw.EdgeInsets.symmetric(
-                                      vertical: 6,
-                                      horizontal: 4,
-                                    ),
-                                    child: pw.Text(
-                                      nf.format(totalDeductions),
-                                      style: pw.TextStyle(
-                                        font: pb,
-                                        fontSize: 10,
-                                      ),
-                                      textAlign: pw.TextAlign.right,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              pw.SizedBox(height: 12),
-              pw.Container(
-                padding: const pw.EdgeInsets.all(12),
-                decoration: pw.BoxDecoration(
-                  border: pw.Border.all(color: PdfColors.blue300),
-                  borderRadius: pw.BorderRadius.circular(6),
-                  color: PdfColors.blue50,
-                ),
-                child: pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text(
-                      'GROSS SALARY',
-                      style: pw.TextStyle(font: pf, fontSize: 10),
-                    ),
-
-                    pw.Text(
-                      nf.format(gross),
-                      style: pw.TextStyle(font: pb, fontSize: 11),
-                    ),
-
-                    pw.SizedBox(width: 20),
-
-                    pw.Text(
-                      'NET PAY',
-                      style: pw.TextStyle(font: pb, fontSize: 12),
-                    ),
-
-                    pw.Text(
-                      nf.format(net),
-                      style: pw.TextStyle(
-                        font: pb,
-                        fontSize: 14,
-                        color: PdfColors.blue900,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              pw.SizedBox(height: 16),
-              pw.Divider(),
-              pw.Align(
-                alignment: pw.Alignment.center,
-                child: pw.Text(
-                  'This is a system generated payslip and does not require a signature.',
-                  style: pw.TextStyle(
-                    font: pf,
-                    fontSize: 9,
-                    color: PdfColors.grey600,
-                  ),
-                ),
-              ),
-              pw.NewPage(),
-            ]);
-          }
-          return widgets;
-        },
-      ),
-    );
-    return doc.save();
-  }
-
-  Future<Uint8List> _generateSinglePayslipPdfBytes(
-    Map<String, dynamic> p, {
-    Uint8List? logoBytes,
-  }) async {
-    return _generateMultiPayslipPdfBytes([p], logoBytes: logoBytes);
-  }
-  // -------------------------
-  // Save PDF to Downloads (Option A)
-  // -------------------------
-
-  Future<void> _savePdfToDownloads(Uint8List bytes, String fileName) async {
-    try {
-      Directory? directory;
-
-      if (Platform.isAndroid) {
-        directory = Directory('/storage/emulated/0/Download');
-      } else {
-        directory = await getApplicationDocumentsDirectory();
-      }
-
-      final filePath = '${directory.path}/$fileName';
-      final file = File(filePath);
-
-      await file.writeAsBytes(bytes);
-
-      // 🔥 OPEN THE PDF AFTER SAVING
-      await OpenFilex.open(filePath);
-
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Payslip saved to Downloads")));
-      }
-    } catch (e) {
-      debugPrint("PDF SAVE ERROR: $e");
-
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Failed to save PDF")));
-      }
-    }
-  }
-
-  // -------------------------
-  // Download single payslip
-  // -------------------------
-  Future<void> _downloadSinglePayslipDirect(Map<String, dynamic> p) async {
-    setState(() => isLoading = true);
-    try {
-      final logoBytes =
-          _cachedLogoBytes ??
-          await _getLogoBytes(await _resolveLogoPublicUrl());
-      final bytes = await _generateSinglePayslipPdfBytes(
-        p,
-        logoBytes: logoBytes,
-      );
-      final fileName =
-          'Payslip_${employee?['employee_id'] ?? 'employee'}_${DateFormat('MMMM_yyyy').format(DateTime(p['year'] ?? selectedYear, p['month'] ?? selectedMonth))}.pdf';
-      await _savePdfToDownloads(bytes, fileName);
-    } catch (e) {
-      debugPrint('download single pdf error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error generating PDF: $e')));
       }
     } finally {
-      setState(() => isLoading = false);
+      if (mounted) setState(() => _downloading = false);
     }
-  }
-
-  // -------------------------
-  // Bulk export (reads stored payslips only)
-  // -------------------------
-  Future<void> _exportBulkRealPdf(int monthsCount) async {
-    if (employee == null) return;
-    setState(() => isLoading = true);
-    try {
-      final now = DateTime.now();
-      final monthsNeeded = <Map<String, int>>[];
-      for (int i = 0; i < monthsCount; i++) {
-        final dt = DateTime(now.year, now.month - i);
-        monthsNeeded.add({'month': dt.month, 'year': dt.year});
-      }
-      final monthsSet = monthsNeeded.map((m) => m['month']!).toSet().toList();
-      final yearsSet = monthsNeeded.map((m) => m['year']!).toSet().toList();
-      final res = await supabase
-          .from('payslips')
-          .select()
-          .eq('employee_id', employee!['id'])
-          .inFilter('month', monthsSet)
-          .inFilter('year', yearsSet);
-      final storedList = res != null
-          ? List<Map<String, dynamic>>.from(res as List)
-          : <Map<String, dynamic>>[];
-      final Map<String, Map<String, dynamic>> storedMap = {};
-      for (final s in storedList) {
-        final key = '${s['month']}-${s['year']}';
-        storedMap[key] = Map<String, dynamic>.from(s);
-      }
-      final pages = <Map<String, dynamic>>[];
-      for (final my in monthsNeeded) {
-        final key = '${my['month']}-${my['year']}';
-        final p = storedMap[key];
-        if (p == null) {
-          debugPrint('Skipping missing stored payslip for $key');
-          continue;
-        }
-
-        pages.add(p);
-      }
-      if (pages.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No payslips available for the selected months.'),
-            ),
-          );
-        }
-        return;
-      }
-      final logoBytes =
-          _cachedLogoBytes ??
-          await _getLogoBytes(await _resolveLogoPublicUrl());
-      final bytes = await _generateMultiPayslipPdfBytes(
-        pages,
-        logoBytes: logoBytes,
+    if (!mounted) return;
+    if (ready.isEmpty) {
+      _toast(payslipPdfErrorMessage(firstError ?? 'none'));
+      return;
+    }
+    if (ready.length < wanted.length) {
+      _toast(
+        '${ready.length} of ${wanted.length} payslips were prepared. ${payslipPdfErrorMessage(firstError ?? 'none')}',
       );
-      final fileName =
-          'payslips-${employee?['employee_id']}-last$monthsCount.pdf';
-      await _savePdfToDownloads(bytes, fileName);
-    } catch (e) {
-      debugPrint('Bulk export error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Bulk export failed: $e')));
-      }
-    } finally {
-      setState(() => isLoading = false);
+    }
+    await _showReadyPayslips(ready);
+  }
+
+  Future<void> _showReadyPayslips(List<PayslipPdf> ready) {
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.7,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  title: Text(
+                    ready.length == 1
+                        ? '1 payslip ready'
+                        : '${ready.length} payslips ready',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: const Text(
+                    'Open a payslip, or save a copy to your device.',
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final pdf in ready)
+                        ListTile(
+                          leading: const Icon(Icons.picture_as_pdf),
+                          title: Text(
+                            safePayslipFileName(pdf.fileName),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: 'Open',
+                                icon: const Icon(Icons.open_in_new),
+                                onPressed: () => _openReady(pdf),
+                              ),
+                              IconButton(
+                                tooltip: 'Save a copy',
+                                icon: const Icon(Icons.save_alt),
+                                onPressed: () => _saveCopy(pdf),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.close),
+                  title: const Text('Close'),
+                  onTap: () => Navigator.of(ctx).pop(),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openReady(PayslipPdf pdf) async {
+    try {
+      await _saveFile(pdf, open: true);
+    } on PayslipOpenFailedException {
+      _toast(kPayslipSavedNoViewerMessage);
+    } catch (_) {
+      _toast(kPayslipPdfFailedMessage);
     }
   }
 
+  Future<void> _saveCopy(PayslipPdf pdf) async {
+    try {
+      if (await _exportFile(pdf)) _toast('Payslip saved.');
+    } catch (_) {
+      _toast("Couldn't save the payslip. Please try again.");
+    }
+  }
+
+  void _showBulkOptionsMenu() {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Wrap(
+            children: [
+              for (final n in const [3, 6, 12])
+                ListTile(
+                  leading: const Icon(Icons.picture_as_pdf),
+                  title: Text('Latest $n payslips (PDF)'),
+                  onTap: () {
+                    Navigator.of(ctx).pop();
+                    _downloadRecent(n);
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.close),
+                title: const Text('Cancel'),
+                onTap: () => Navigator.of(ctx).pop(),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // -------------------------
-  // UI helpers
+  // UI
   // -------------------------
   Widget _employeeCard() {
     if (employee == null) return const SizedBox();
@@ -1612,10 +517,28 @@ class _PayslipScreenState extends State<PayslipScreen> {
     );
   }
 
+  /// True when the list is complete (not cut off by the server's cap of 12), so a period that is not in it has no
+  /// released payslip and need not be selectable. With nothing released, or a full list, every period stays selectable.
+  bool get _restrictToListed {
+    final list = released;
+    return list != null && list.isNotEmpty && list.length < kPayslipListCap;
+  }
+
+  /// "Payslips are available from November 2025 onwards.": the oldest released payslip the server listed, only when the
+  /// list is complete (a full list may have older payslips cut off, so no start month can be claimed).
+  String? get _availableFromText {
+    final list = released;
+    if (!_restrictToListed || list == null) return null;
+    final oldest = list.last;
+    return 'Payslips are available from ${DateFormat.MMMM().format(DateTime(oldest.year, oldest.month))} ${oldest.year} onwards.';
+  }
+
   Widget _periodSelectorCard() {
     final months = List.generate(12, (i) => i + 1);
-    final years = List.generate(5, (i) => DateTime.now().year - 4 + i)
-      ..sort((a, b) => b.compareTo(a));
+    // Every month and the recent years are always selectable; a period without a released payslip says so
+    // (kPayslipNoneForPeriodMessage) instead of being hidden or greyed out.
+    final defaultYears = List.generate(6, (i) => DateTime.now().year - 5 + i);
+    final years = {...defaultYears, ...?released?.map((p) => p.year), selectedYear}.toList()..sort((a, b) => b.compareTo(a));
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -1683,17 +606,15 @@ class _PayslipScreenState extends State<PayslipScreen> {
                       vertical: 14,
                     ),
                   ),
-                  items: months
-                      .map(
-                        (m) => DropdownMenuItem(
-                          value: m,
-                          child: Text(
-                            DateFormat.MMMM().format(DateTime(2020, m)),
-                            style: GoogleFonts.montserrat(),
-                          ),
-                        ),
-                      )
-                      .toList(),
+                  items: months.map((m) {
+                    return DropdownMenuItem(
+                      value: m,
+                      child: Text(
+                        DateFormat.MMMM().format(DateTime(2020, m)),
+                        style: GoogleFonts.montserrat(),
+                      ),
+                    );
+                  }).toList(),
                   onChanged: (val) async {
                     if (val == null) return;
                     setState(() => selectedMonth = val);
@@ -1743,689 +664,212 @@ class _PayslipScreenState extends State<PayslipScreen> {
     );
   }
 
+  ButtonStyle _buttonStyle(bool enabled) => ElevatedButton.styleFrom(
+    backgroundColor: Colors.blue[700],
+    disabledBackgroundColor: Colors.blue[700]!.withValues(alpha: 0.35),
+    padding: const EdgeInsets.symmetric(vertical: 14),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+  );
+
   Widget _actionsRow() {
+    final canBulk = !_downloading && (released?.isNotEmpty ?? false);
+    final canSingle = !_downloading && selected != null;
     return Row(
       children: [
         Expanded(
           child: ElevatedButton.icon(
-            onPressed: _showBulkOptionsMenu,
+            onPressed: canBulk ? _showBulkOptionsMenu : null,
             icon: const Icon(Icons.file_download_outlined, color: Colors.white),
             label: Text(
               'Bulk Download',
               style: GoogleFonts.montserrat(color: Colors.white),
             ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue[700],
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(30),
-              ),
-            ),
+            style: _buttonStyle(canBulk),
           ),
         ),
         const SizedBox(width: 12),
         Expanded(
           child: ElevatedButton.icon(
-            onPressed: () async {
-              if (payslip == null) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('No payslip available to download'),
+            onPressed: canSingle ? _downloadSingle : null,
+            icon: _downloading
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
                     ),
-                  );
-                }
-                return;
-              }
-
-              await _downloadSinglePayslipDirect(payslip!);
-            },
-            icon: const Icon(Icons.download_outlined, color: Colors.white),
+                  )
+                : const Icon(Icons.download_outlined, color: Colors.white),
             label: Text(
               'Download PDF',
               style: GoogleFonts.montserrat(color: Colors.white),
             ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue[700],
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(30),
-              ),
-            ),
+            style: _buttonStyle(canSingle),
           ),
         ),
       ],
-    );
-  }
-
-  void _showBulkOptionsMenu() {
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) {
-        return SafeArea(
-          child: Wrap(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.picture_as_pdf),
-                title: const Text('Last 3 months (PDF)'),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  _exportBulkRealPdf(3);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.picture_as_pdf),
-                title: const Text('Last 6 months (PDF)'),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  _exportBulkRealPdf(6);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.picture_as_pdf),
-                title: const Text('Last 12 months (PDF)'),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  _exportBulkRealPdf(12);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.close),
-                title: const Text('Cancel'),
-                onTap: () => Navigator.of(ctx).pop(),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 
   Widget _infoChipAndBanner() {
-    return Column(
-      children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Chip(
-            label: Text(
-              'Computed from Config',
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xFFFDF7F2),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.orange[100]!),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, color: Colors.orange[700]),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _availableFromText ??
+                  'Payslips appear here once your organization releases them to you.',
               style: GoogleFonts.montserrat(fontSize: 13),
             ),
-            backgroundColor: Colors.blue[50],
-            avatar: const Icon(Icons.autorenew, size: 16, color: Colors.blue),
           ),
-        ),
-        const SizedBox(height: 8),
-        Container(
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: const Color(0xFFFDF7F2),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Colors.orange[100]!),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.orange.withOpacity(0.06),
-                blurRadius: 8,
-                offset: const Offset(0, 3),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(Icons.info_outline, color: Colors.orange[700]),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'This payslip was computed using salary configuration.',
-                  style: GoogleFonts.montserrat(fontSize: 13),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _payslipCardOrMessage() {
-    if (isFuturePeriod || !isAccessGranted) {
-      return Container(
-        width: double.infinity,
-        decoration: BoxDecoration(
-          color: Colors.amber[50],
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black12.withOpacity(0.05),
-              blurRadius: 6,
-              offset: const Offset(0, 3),
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.all(16),
-        child: Text(
-          infoMsg ?? 'Payslip not released for this month and year.',
-          style: GoogleFonts.montserrat(
-            color: Colors.orange[900],
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-      );
-    }
-    if (payslip == null) {
-      return Center(
+  Widget _messageCard(IconData icon, String text, {VoidCallback? onRetry}) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.receipt_long, size: 60, color: Colors.grey[400]),
+            Icon(icon, size: 60, color: Colors.grey[400]),
             const SizedBox(height: 12),
             Text(
-              'No Payslip Found',
-              style: GoogleFonts.montserrat(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'No payslips available for the selected period.',
+              text,
+              textAlign: TextAlign.center,
               style: GoogleFonts.montserrat(color: Colors.grey[700]),
             ),
+            if (onRetry != null)
+              TextButton(onPressed: onRetry, child: const Text('Retry')),
           ],
         ),
-      );
-    }
-    final periodTitle =
-        'Payslip - ${DateFormat.MMMM().format(DateTime(selectedYear, selectedMonth))} $selectedYear';
+      ),
+    );
+  }
+
+  /// "₹46,200.00" for a number; "Not available" when the server gave none (never a made-up 0).
+  String _money(num? v) => v == null
+      ? 'Not available'
+      : NumberFormat.currency(
+          locale: 'en_IN',
+          symbol: '₹',
+          decimalDigits: 2,
+        ).format(v);
+
+  /// The payslip listed for the selected period. It shows what the server has said so far: that the payslip is released
+  /// to this employee, and, once the PDF has been fetched, the title and net pay the server reported (a genuine 0 stays
+  /// 0). The amounts are never computed or guessed here.
+  Widget _selectedPayslipCard() {
+    final s = selected!;
+    final pdf = _pdfFor == s.id ? _pdf : null;
+    final title = (pdf?.summary ?? '').isNotEmpty
+        ? pdf!.summary!
+        : 'Payslip for ${DateFormat.MMMM().format(DateTime(s.year, s.month))} ${s.year}';
     return Container(
+      width: double.infinity,
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(14),
         boxShadow: [
           BoxShadow(
-            color: Colors.black12.withOpacity(0.04),
+            color: Colors.black12.withValues(alpha: 0.04),
             blurRadius: 8,
             offset: const Offset(0, 3),
           ),
         ],
       ),
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 14),
+      padding: const EdgeInsets.all(16),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header
           Row(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.receipt_long, color: Colors.blue[800]),
-              const SizedBox(width: 8),
-              Text(
-                periodTitle,
-                style: GoogleFonts.montserrat(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
+              const Icon(Icons.receipt_long, color: Colors.blue),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  style: GoogleFonts.montserrat(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            organization?['name'] ?? '-',
-            style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
-          ),
-          if ((organization?['location'] ?? '').toString().isNotEmpty)
-            Text(
-              organization?['location'] ?? '',
-              style: GoogleFonts.montserrat(color: Colors.grey[700]),
-            ),
-          const SizedBox(height: 16),
-
-          // Employee info
-          Container(
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: const Color(0xFFF7F9FA),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFE0E0E0)),
-            ),
-            padding: const EdgeInsets.all(14),
-            child: Wrap(
-              spacing: 14,
-              runSpacing: 10,
-              children: [
-                _infoPair('EMPLOYEE NAME', employee?['full_name'] ?? '--'),
-                _infoPair(
-                  'EMPLOYEE CODE',
-                  employee?['employee_id']?.toString() ?? '--',
-                ),
-                _infoPair(
-                  'DEPARTMENT',
-                  employee?['department']?.toString() ?? '--',
-                ),
-                _infoPair(
-                  'DESIGNATION',
-                  employee?['designation']?.toString() ?? '--',
-                ),
-                _infoPair(
-                  'PAN NUMBER',
-                  employee?['pan_no']?.toString() ?? '--',
-                ),
-                _infoPair(
-                  'UAN NUMBER',
-                  employee?['uan_no']?.toString() ?? '--',
-                ),
-                _infoPair(
-                  'DATE OF JOINING',
-                  employee?['date_of_joining'] != null
-                      ? _formatDate(employee!['date_of_joining'])
-                      : '--',
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          // Attendance
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black12.withOpacity(0.05),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: _attItem(
-                        'TOTAL DAYS IN MONTH',
-                        (payslip?['total_monthly_days'] ?? '--').toString(),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _attItem(
-                        'TOTAL WORKING DAYS',
-                        (payslip?['effective_work_days'] ?? '--').toString(),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _attItem(
-                        'WEEKLY OFFS, LEAVES & HOLIDAYS',
-                        (payslip?['weekly_offs_leaves_holidays'] ?? '--')
-                            .toString(),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _attItem(
-                        'LOP/ABSENT',
-                        (payslip?['lop_absent'] ?? '0').toString(),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _attItem(
-                        'PAY DAYS',
-                        (payslip?['pay_days'] ??
-                                payslip?['total_monthly_days'] ??
-                                '--')
-                            .toString(),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          // Earnings
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black12.withOpacity(0.05),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'EARNINGS',
-                  style: GoogleFonts.montserrat(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.green[700],
-                    fontSize: 15,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                ..._earningsRowsFromPayslip(payslip!).map(
-                  (w) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: w,
-                  ),
-                ),
-                const Divider(),
-                _kvRow(
-                  'TOTAL EARNINGS',
-                  '₹ ${_formatCurrencyDouble(double.tryParse((payslip?['total_earnings'] ?? '0').toString()) ?? 0)}',
-                  isBold: true,
-                  valueColor: Colors.green[700],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          // Deductions
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black12.withOpacity(0.05),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'DEDUCTIONS',
-                  style: GoogleFonts.montserrat(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.red[700],
-                    fontSize: 15,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                ..._deductionRowsFromPayslip(payslip!).map(
-                  (w) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: w,
-                  ),
-                ),
-                const Divider(),
-                _kvRow(
-                  'TOTAL DEDUCTIONS',
-                  '₹ ${_formatCurrencyDouble(double.tryParse((payslip?['total_deductions'] ?? '0').toString()) ?? 0)}',
-                  isBold: true,
-                  valueColor: Colors.red[700],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          // Net pay
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
-            decoration: BoxDecoration(
-              color: Colors.blue[50],
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.blue[200]!),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.blue.withOpacity(0.05),
-                  blurRadius: 6,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const SizedBox(width: 10),
-                Text(
-                  'NET PAY',
-                  style: GoogleFonts.montserrat(
-                    color: Colors.blue[900],
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Text(
-                  '₹ ${_formatCurrencyDouble(double.tryParse((payslip?['net_pay'] ?? '0').toString()) ?? 0)}',
-                  style: GoogleFonts.montserrat(
-                    color: Colors.blue[900],
-                    fontWeight: FontWeight.bold,
-                    fontSize: 20,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _infoPair(String title, String value) {
-    return SizedBox(
-      width: 170,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: GoogleFonts.montserrat(
-              fontSize: 11,
-              color: Colors.grey[700],
-            ),
-          ),
           const SizedBox(height: 6),
           Text(
-            value,
-            style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
+            'Released to you',
+            style: GoogleFonts.montserrat(fontSize: 12, color: Colors.green[700]),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _attItem(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black12.withOpacity(0.05),
-            blurRadius: 6,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            label,
-            style: GoogleFonts.montserrat(
-              fontSize: 11,
-              color: Colors.grey[700],
+          if (pdf?.netPay != null) ...[
+            const Divider(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('NET PAY', style: GoogleFonts.montserrat(fontWeight: FontWeight.w700)),
+                Text(_money(pdf!.netPay), style: GoogleFonts.montserrat(fontWeight: FontWeight.w800, fontSize: 16)),
+              ],
             ),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 6),
-          Text(
-            value,
-            style: GoogleFonts.montserrat(
-              fontWeight: FontWeight.bold,
-              fontSize: 14,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _kvRow(
-    String left,
-    String right, {
-    bool isBold = false,
-    Color? valueColor,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              left,
-              style: GoogleFonts.montserrat(
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
+          ],
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _downloading ? null : _downloadSingle,
+                  icon: const Icon(Icons.picture_as_pdf_outlined),
+                  label: const Text('View PDF'),
+                ),
               ),
-            ),
-          ),
-          Text(
-            right,
-            style: GoogleFonts.montserrat(
-              fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
-              color: valueColor ?? Colors.black,
-            ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _downloading ? null : _saveSelectedCopy,
+                  icon: const Icon(Icons.save_alt),
+                  label: const Text('Save a copy'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
     );
   }
 
-  List<Widget> _earningsRowsFromPayslip(Map<String, dynamic> p) {
-    if (p['payslip_line_items'] != null && p['payslip_line_items'].isNotEmpty) {
-      final items = List<Map<String, dynamic>>.from(p['payslip_line_items']);
-      return items
-          .where((e) => e['component_type'] == 'earning')
-          .map(
-            (e) => _kvRow(
-              e['component_name'].toString().toUpperCase(),
-              '₹ ${_formatCurrencyDouble(double.tryParse(e['component_amount'].toString()) ?? 0)}',
-            ),
-          )
-          .toList();
-    }
-
-    final rows = <Widget>[];
-    for (final cfg in salaryConfig) {
-      final name = (cfg['component_name'] ?? cfg['name'] ?? '').toString();
-      final type = (cfg['component_type'] ?? 'earning')
-          .toString()
-          .toLowerCase();
-      if (type != 'earning') continue;
-      final key = name.toLowerCase().replaceAll(' ', '_');
-      final value = double.tryParse(p[key]?.toString() ?? '0') ?? 0.0;
-      if (value == 0) continue;
-      rows.add(_kvRow(name.toUpperCase(), '₹ ${_formatCurrencyDouble(value)}'));
-    }
-    if (salaryConfig.isEmpty) {
-      void addIfPresent(String label, dynamic value) {
-        final v = double.tryParse((value ?? '0').toString()) ?? 0.0;
-        if (v == 0) return;
-        rows.add(_kvRow(label, '₹ ${_formatCurrencyDouble(v)}'));
-      }
-
-      addIfPresent('BASIC PAY', p['basic_pay']);
-      addIfPresent('HRA', p['hra']);
-      addIfPresent('SPECIAL ALLOWANCE', p['special_allowance']);
-      addIfPresent('DEARNESS ALLOWANCE', p['dearness_allowance']);
-      addIfPresent('CONVEYANCE ALLOWANCE', p['conveyance_allowance']);
-      addIfPresent('MEDICAL ALLOWANCE', p['medical_allowance']);
-      addIfPresent('OTHER ALLOWANCE', p['other_allowance']);
-      addIfPresent('OVERTIME PAY', p['overtime_pay']);
-    }
-    return rows;
-  }
-
-  List<Widget> _deductionRowsFromPayslip(Map<String, dynamic> p) {
-    if (p['payslip_line_items'] != null && p['payslip_line_items'].isNotEmpty) {
-      final items = List<Map<String, dynamic>>.from(p['payslip_line_items']);
-      return items
-          .where((e) => e['component_type'] == 'deduction')
-          .map(
-            (e) => _kvRow(
-              e['component_name'].toString().toUpperCase(),
-              '₹ ${_formatCurrencyDouble(double.tryParse(e['component_amount'].toString()) ?? 0)}',
-            ),
-          )
-          .toList();
-    }
-
-    final rows = <Widget>[];
-    final deductionMap = {
-      'pf_employee': 'EMPLOYEE PF',
-      'esi_employee': 'EMPLOYEE ESI',
-      'professional_tax': 'PROFESSIONAL TAX',
-      'income_tax': 'INCOME TAX',
-      'loan_deduction': 'LOAN DEDUCTION',
-      'other_deductions': 'OTHER DEDUCTIONS',
-    };
-
-    deductionMap.forEach((key, label) {
-      final value = double.tryParse(p[key]?.toString() ?? '0') ?? 0.0;
-      if (value == 0) return;
-      rows.add(_kvRow(label, '₹ ${_formatCurrencyDouble(value)}'));
-    });
-    if (rows.isEmpty && salaryConfig.isNotEmpty) {
-      for (final cfg in salaryConfig) {
-        final type = (cfg['component_type'] ?? 'earning')
-            .toString()
-            .toLowerCase();
-        if (type != 'deduction') continue;
-        final name = (cfg['component_name'] ?? cfg['name'] ?? '').toString();
-        final key = name.toLowerCase().replaceAll(' ', '_');
-        final value = double.tryParse(p[key]?.toString() ?? '0') ?? 0.0;
-        if (value == 0) continue;
-        rows.add(
-          _kvRow(name.toUpperCase(), '₹ ${_formatCurrencyDouble(value)}'),
-        );
-      }
-    }
-    if (rows.isEmpty) {
-      void addIfPresent(String label, dynamic value) {
-        final v = double.tryParse((value ?? '0').toString()) ?? 0.0;
-        if (v == 0) return;
-        rows.add(_kvRow(label, '₹ ${_formatCurrencyDouble(v)}'));
-      }
-
-      addIfPresent('EMPLOYEE PF', p['employee_pf']);
-      addIfPresent('EMPLOYEE ESI', p['employee_esi']);
-      addIfPresent('PROFESSIONAL TAX', p['professional_tax']);
-      addIfPresent('TDS/INCOME TAX', p['tds_income_tax']);
-      addIfPresent('HEALTH EDUCATION CESS', p['health_education_cess']);
-      addIfPresent('EXCESS LEAVE DEDUCTION', p['excess_leave_deduction']);
-      addIfPresent('LOAN DEDUCTION', p['loan_deduction']);
-      addIfPresent('OTHER DEDUCTIONS', p['other_deductions']);
-    }
-    return rows;
+  Widget _payslipCardOrMessage() {
+    if (errorMsg != null)
+      return _messageCard(Icons.error_outline, errorMsg!, onRetry: _initialize);
+    if (releasedFailed)
+      return _messageCard(
+        Icons.error_outline,
+        kPayslipListFailedMessage,
+        onRetry: _initialize,
+      );
+    if (isFuturePeriod)
+      return _messageCard(Icons.schedule, kPayslipFuturePeriodMessage);
+    if (selected != null) return _selectedPayslipCard();
+    if (_isBeyondListedHistory(selectedMonth, selectedYear))
+      return _messageCard(Icons.history, kPayslipOlderMessage);
+    return _messageCard(
+      Icons.receipt_long,
+      (released?.isEmpty ?? true)
+          ? 'No payslips have been released to you yet.'
+          : kPayslipNoneForPeriodMessage,
+    );
   }
 
   @override
@@ -2453,9 +897,27 @@ class _PayslipScreenState extends State<PayslipScreen> {
               Padding(
                 padding: const EdgeInsets.only(right: 16, top: 12),
                 child: Container(
-                  decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))]),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
                   child: IconButton(
-                    icon: SvgPicture.asset("assets/icons/menu.svg", width: 20, height: 20, colorFilter: const ColorFilter.mode(EmployeeUi.primary, BlendMode.srcIn)),
+                    icon: SvgPicture.asset(
+                      "assets/icons/menu.svg",
+                      width: 20,
+                      height: 20,
+                      colorFilter: const ColorFilter.mode(
+                        EmployeeUi.primary,
+                        BlendMode.srcIn,
+                      ),
+                    ),
                     onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
                   ),
                 ),
@@ -2478,7 +940,14 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   children: [
                     Text("Payroll & Payslips", style: EmployeeUi.header(24)),
                     const SizedBox(height: 4),
-                    Text("View and download your salary statements", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
+                    Text(
+                      "View and download your salary statements",
+                      style: GoogleFonts.montserrat(
+                        fontSize: 12,
+                        color: EmployeeUi.muted,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -2503,13 +972,14 @@ class _PayslipScreenState extends State<PayslipScreen> {
                         const SizedBox(height: 12),
                         _actionsRow(),
                         const SizedBox(height: 12),
-                        _infoChipAndBanner(),
+                        if (selected == null || _availableFromText != null)
+                          _infoChipAndBanner(),
                         const SizedBox(height: 12),
                         _payslipCardOrMessage(),
                       ],
                     ),
                   ),
-                ),
+          ),
 
           // 🤖 TOFFY CHAT OVERLAY
         ],

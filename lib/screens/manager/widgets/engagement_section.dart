@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../../core/manager_access.dart';
 import '../manager_engage_screen.dart';
 
 class EngagementSection extends StatelessWidget {
-  final int announcements;
-  final int events;
-  final int surveys;
+  final int? announcements;
+  final int? events;
+  final int? surveys;
   final String userEmail;
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
@@ -27,10 +28,13 @@ class EngagementSection extends StatelessWidget {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => ManagerEngageScreen(
-              userEmail: userEmail,
-              userData: userData,
-              fetchHrmsContext: fetchHrmsContext,
+            builder: (_) => managerScreenFor(
+              ManagerFeature.engage,
+              () => ManagerEngageScreen(
+                userEmail: userEmail,
+                userData: userData,
+                fetchHrmsContext: fetchHrmsContext,
+              ),
             ),
           ),
         );
@@ -48,7 +52,10 @@ class EngagementSection extends StatelessWidget {
           children: [
             Text(
               "Engagement",
-              style: GoogleFonts.montserrat(fontSize: 18, fontWeight: FontWeight.bold),
+              style: GoogleFonts.montserrat(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 4),
             Text(
@@ -59,9 +66,24 @@ class EngagementSection extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildEngageItem(Icons.campaign_outlined, announcements, "Announcements", Colors.blueGrey),
-                _buildEngageItem(Icons.event_available_outlined, events, "Events", Colors.blueAccent),
-                _buildEngageItem(Icons.poll_outlined, surveys, "Surveys", Colors.green),
+                _buildEngageItem(
+                  Icons.campaign_outlined,
+                  announcements,
+                  "Announcements",
+                  Colors.blueGrey,
+                ),
+                _buildEngageItem(
+                  Icons.event_available_outlined,
+                  events,
+                  "Events",
+                  Colors.blueAccent,
+                ),
+                _buildEngageItem(
+                  Icons.poll_outlined,
+                  surveys,
+                  "Surveys",
+                  Colors.green,
+                ),
               ],
             ),
           ],
@@ -70,18 +92,30 @@ class EngagementSection extends StatelessWidget {
     );
   }
 
-  Widget _buildEngageItem(IconData icon, int count, String label, Color color) {
+  Widget _buildEngageItem(
+    IconData icon,
+    int? count,
+    String label,
+    Color color,
+  ) {
     return Column(
       children: [
         Icon(icon, color: color, size: 24),
         const SizedBox(height: 8),
         Text(
-          count.toString(),
-          style: GoogleFonts.montserrat(fontSize: 20, fontWeight: FontWeight.bold),
+          count?.toString() ?? "-", // unknown is "-", never a misleading 0
+          style: GoogleFonts.montserrat(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         Text(
           label,
-          style: GoogleFonts.montserrat(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.w500),
+          style: GoogleFonts.montserrat(
+            fontSize: 10,
+            color: Colors.grey,
+            fontWeight: FontWeight.w500,
+          ),
         ),
       ],
     );

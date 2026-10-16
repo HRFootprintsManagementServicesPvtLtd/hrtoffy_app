@@ -2,9 +2,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../core/api/api_client.dart';
+import '../repositories/expense_repository.dart';
+import '../repositories/travel_repository.dart';
+import '../repositories/workflow_repository.dart';
 import '../widgets/skeleton_layouts.dart';
 import '../widgets/app_drawer.dart';
 import 'dashboard_screen.dart';
@@ -23,17 +26,11 @@ import '../widgets/employee_ui.dart';
 //                  src/components/expenses/ExpenseClaimsList.tsx
 //                  src/components/travel/TravelClaimsList.tsx
 //
-// Key rules (do not diverge):
-//   * expense_categories column = "name" (NOT category_name)
-//   * travel line items table   = "travel_expenses" (NOT travel_claim_items)
-//   * expense receipts bucket   = "expense-receipts" (private → SIGNED URL)
-//   * travel  receipts bucket   = "travel-receipts"  (private, website uses public URL)
-//   * expense receipt path      = {auth.uid()}/{claimId}/{index}_{ts}.{ext}
-//   * travel  receipt path      = {employeeId}/{ts}_{index}.{ext}
-//   * claim_number is filled by a DB trigger — send empty string ''
-//   * DO NOT call initialize_workflow RPC (does not exist in DB)
-//   * Employee lookup must scope by user_id + organization_id + status='active'
-//   * List queries must scope by organization_id
+// Data comes from the HR Toffy API (TravelRepository / ExpenseRepository):
+//   * travel claims  : GET/POST /travel/claims, lines via POST /travel-expenses (one call per line)
+//   * expense claims : GET/POST /expenses (lines in the same request), categories via GET /expenses/categories
+//   * receipts       : Files API, buckets travel-receipts / expense-receipts (private; the stored value is the file reference)
+//   * claim_number is assigned by the server; employee and organization come from the signed-in session
 // =============================================================================
 
 class TravelExpensesScreen extends StatefulWidget {
@@ -269,57 +266,53 @@ class _TravelExpensesScreenState extends State<TravelExpensesScreen> with Single
 // Shared helpers
 // =============================================================================
 
-class _ClaimContext {
-  final String employeeId;
-  final String organizationId;
-  final String? managerId;
-  final String authUid;
-  _ClaimContext({
-    required this.employeeId,
-    required this.organizationId,
-    required this.managerId,
-    required this.authUid,
-  });
+/// A short message that is safe to show: nothing about URLs, tokens or the server's internals.
+String _errorText(Object e, String fallback) {
+  if (e is TravelClaimIncompleteException) {
+    return 'Some expense lines could not be saved and the claim may be incomplete. Please check your travel claims list and contact HR.';
+  }
+  if (e is ApiException) {
+    if (e.isNetworkError) return 'No connection. Please check your internet and try again.';
+    if (e.isServerError || e.isUnauthorized) return fallback;
+    return e.message.isEmpty ? fallback : e.message;
+  }
+  if (e is StateError) return e.message;
+  return fallback;
 }
 
-/// Resolves employee_id / organization_id / manager_id the same way the
-/// website does: user_id + organization_id + status='active'.
-Future<_ClaimContext?> _resolveClaimContext({
-  required Map<String, dynamic> userData,
-}) async {
-  final supabase = Supabase.instance.client;
-  final user = supabase.auth.currentUser;
-  debugPrint("========== CLAIM CONTEXT ==========");
-  debugPrint("AUTH USER = ${user?.id}");
-  debugPrint("USER DATA = $userData");
-  if (user == null) return null;
-
-  final orgId = userData['organization_id']?.toString();
-  debugPrint("ORG ID = $orgId");
-  if (orgId == null || orgId.isEmpty) return null;
-
-  // Website: .eq('user_id', user.id).eq('organization_id', orgId).eq('status', 'active')
-  final emp = await supabase
-      .from('employee_records')
-      .select('id, manager_id')
-      .eq('user_id', user.id)
-      .eq('organization_id', orgId)
-      .eq('status', 'active')
-      .maybeSingle();
-  debugPrint("EMPLOYEE RECORD = $emp");
-
-  if (emp == null) {
-    debugPrint("Employee lookup returned NULL");
-    return null;
+/// What the employee sees when an EXPENSE CLAIM could not be submitted: by status, never the server's text.
+/// The server answers a 5xx when the database refuses the claim under the organization's expense policy (a category that
+/// requires a receipt but none is attached, a category monthly limit, a missing or inactive category): the same error as any
+/// server fault, so the message says what is worth checking instead of a bare "failed".
+String expenseSubmitErrorMessage(Object e) {
+  // A receipt that could not be uploaded: the claim was not created. Say which kind of problem it is, and never
+  // suggest that receipts work when the receipt service is not on the server.
+  if (e is ReceiptUploadException) {
+    if (e.serviceUnavailable) {
+      return "Receipts can't be uploaded from the app right now (the receipt service isn't available). Your claim was not submitted. Remove the receipt, or submit this claim on the website.";
+    }
+    if (e.statusCode == 0) return 'No connection. The receipt was not uploaded and your claim was not submitted.';
+    return "The receipt couldn't be uploaded, so your claim was not submitted. Please try again.";
   }
+  if (e is ApiException) {
+    if (e.isNetworkError) return 'No connection. Please check your internet and try again.';
+    if (e.isUnauthorized) return 'Session expired. Please sign in again.';
+    if (e.isForbidden) return "You can't submit this claim. Please contact HR.";
+    if (e.isNotFound) return 'The selected category is no longer available. Please choose another one.';
+    if (e.statusCode == 400 || e.statusCode == 422) return 'Please check the claim details and try again.';
+    if (e.isServerError) {
+      return "The claim wasn't accepted. It may need a receipt, or be over the category's monthly limit. Attach a receipt or reduce the amount and try again, or contact HR.";
+    }
+  }
+  return _errorText(e, 'Failed to submit expense claim. Please try again.');
+}
 
-  if (emp == null) return null;
-  return _ClaimContext(
-    employeeId: emp['id'].toString(),
-    organizationId: orgId,
-    managerId: emp['manager_id']?.toString(),
-    authUid: user.id,
-  );
+/// Reads a picked receipt into memory for upload.
+Future<ReceiptFile> _readReceipt(PlatformFile file) async {
+  final path = file.path;
+  if (path == null || path.isEmpty) throw StateError('The selected receipt could not be read. Please pick it again.');
+  final ext = (file.extension ?? 'jpg').toLowerCase();
+  return ReceiptFile(bytes: await File(path).readAsBytes(), name: file.name, contentType: _mimeFor(ext));
 }
 
 // =============================================================================
@@ -330,14 +323,15 @@ class TravelClaimsList extends StatefulWidget {
   final String email;
   final Map<String, dynamic> userData;
   final int refreshKey;
-  const TravelClaimsList({required this.email, required this.userData, this.refreshKey = 0, Key? key}) : super(key: key);
+  final TravelRepository? repository;
+  const TravelClaimsList({required this.email, required this.userData, this.refreshKey = 0, this.repository, Key? key}) : super(key: key);
 
   @override
   State<TravelClaimsList> createState() => _TravelClaimsListState();
 }
 
 class _TravelClaimsListState extends State<TravelClaimsList> {
-  final supabase = Supabase.instance.client;
+  late final TravelRepository _travel = widget.repository ?? TravelRepository();
   late Future<List<dynamic>> _future;
 
   @override
@@ -354,29 +348,7 @@ class _TravelClaimsListState extends State<TravelClaimsList> {
     }
   }
 
-  Future<List<dynamic>> _fetch() async {
-    final ctx = await _resolveClaimContext(
-      userData: widget.userData,
-    );
-
-    debugPrint("===== TRAVEL FETCH =====");
-    debugPrint("ctx = $ctx");
-
-    if (ctx == null) {
-      debugPrint("Travel context is NULL");
-      return [];
-    }
-
-    final rows = await supabase
-        .from('travel_claims')
-        .select('*')
-        .eq('employee_id', ctx.employeeId)
-        .eq('organization_id', ctx.organizationId)
-        .order('created_at', ascending: false);
-
-    debugPrint('Travel rows: $rows');
-    return (rows as List?) ?? [];
-  }
+  Future<List<dynamic>> _fetch() => _travel.claims();
 
 
 
@@ -469,11 +441,13 @@ class TravelClaimForm extends StatefulWidget {
   final Map<String, dynamic> userData;
   final VoidCallback onCancel;
   final VoidCallback onSuccess;
+  final TravelRepository? repository;
   const TravelClaimForm({
     required this.email,
     required this.userData,
     required this.onCancel,
     required this.onSuccess,
+    this.repository,
     Key? key,
   }) : super(key: key);
   @override
@@ -489,7 +463,7 @@ class _TravelClaimFormState extends State<TravelClaimForm> {
   DateTime toDate = DateTime.now().add(const Duration(days: 3));
   String travelType = 'domestic';
   bool submitting = false;
-  final supabase = Supabase.instance.client;
+  late final TravelRepository _travel = widget.repository ?? TravelRepository();
 
   // Website expense_type enum values — must match server-side validation.
   static const List<String> _expenseTypes = [
@@ -515,157 +489,40 @@ class _TravelClaimFormState extends State<TravelClaimForm> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => submitting = true);
     try {
-      debugPrint('[TravelClaim] STEP 1 Resolve employee START');
-
-      final ctx = await _resolveClaimContext(userData: widget.userData);
-
-      if (ctx == null) {
-        debugPrint('[TravelClaim] STEP 1 Resolve employee FAILED');
-        throw 'Employee context not found';
+      final lines = <TravelLine>[];
+      for (final item in items) {
+        final file = item['receipt'] as PlatformFile?;
+        lines.add(TravelLine(
+          expenseDate: item['expense_date'].toString(),
+          expenseType: (item['expense_type'] ?? 'Other').toString(),
+          description: (item['description'] ?? '').toString(),
+          amount: (item['amount'] as num?)?.toDouble() ?? 0.0,
+          receipt: file == null ? null : await _readReceipt(file),
+        ));
       }
 
-      debugPrint(
-        '[TravelClaim] STEP 1 Resolve employee DONE '
-            'employeeId=${ctx.employeeId} '
-            'organizationId=${ctx.organizationId} '
-            'managerPresent=${ctx.managerId != null}',
+      await _travel.submitClaim(
+        tripPurpose: _purposeController.text,
+        tripDestination: _destController.text,
+        fromLocation: _fromLocController.text,
+        tripFromDate: fromDate,
+        tripToDate: toDate,
+        travelType: travelType,
+        lines: lines,
       );
-
-      final total = items.fold<double>(0.0, (sum, item) => sum + ((item['amount'] as num?)?.toDouble() ?? 0.0));
-      final totalDays = toDate.difference(fromDate).inDays + 1;
-
-      // === Insert travel claim ===
-      // Mirror website payload exactly. claim_number is filled by DB trigger.
-      final claimPayload = <String, dynamic>{
-        'claim_number': '',
-        'employee_id': ctx.employeeId,
-        'organization_id': ctx.organizationId,
-        'manager_id': ctx.managerId,
-        'trip_purpose': _purposeController.text,
-        'trip_destination': _destController.text,
-        'from_location': _fromLocController.text,
-        'trip_from_date': DateFormat('yyyy-MM-dd').format(fromDate),
-        'trip_to_date': DateFormat('yyyy-MM-dd').format(toDate),
-        'total_days': totalDays,
-        'travel_type': travelType,
-        'total_amount': total,
-        'status': 'pending',
-      };
-
-      debugPrint(
-        '[TravelClaim] STEP 3 Insert travel_claim START '
-            'employeeId=${ctx.employeeId} '
-            'organizationId=${ctx.organizationId} '
-            'managerPresent=${ctx.managerId != null} '
-            'itemCount=${items.length} '
-            'total=$total',
-      );
-
-      final claim = await supabase
-          .from('travel_claims')
-          .insert(claimPayload)
-          .select('id, claim_number')
-          .single();
-
-      final claimId = claim['id'].toString();
-
-      debugPrint(
-        '[TravelClaim] STEP 3 Insert travel_claim DONE '
-            'claimId=$claimId claimNumber=${claim['claim_number']}',
-      );
-
-      // === Upload receipts & insert line items into travel_expenses ===
-      // (website table = "travel_expenses", NOT "travel_claim_items")
-      final List<Map<String, dynamic>> expensesToInsert = [];
-      for (int i = 0; i < items.length; i++) {
-        final item = items[i];
-        String? receiptUrl;
-
-        if (item['receipt'] != null) {
-          debugPrint('[TravelClaim] STEP 2 Upload receipt START index=$i');
-
-          final file = item['receipt'] as PlatformFile;
-          final filePath = file.path;
-
-          if (filePath == null || filePath.isEmpty) {
-            debugPrint(
-              '[TravelClaim] STEP 2 Upload receipt FAILED '
-                  'index=$i reason=missing-local-path',
-            );
-            throw StateError('Selected receipt has no readable local path');
-          }
-
-          final ext = (file.extension ?? 'jpg').toLowerCase();
-          final path =
-              '${ctx.employeeId}/${DateTime.now().millisecondsSinceEpoch}_$i.$ext';
-
-          final bytes = await File(filePath).readAsBytes();
-
-          await supabase.storage.from('travel-receipts').uploadBinary(
-            path,
-            bytes,
-            fileOptions: FileOptions(
-              contentType: _mimeFor(ext),
-              upsert: false,
-            ),
-          );
-
-          receiptUrl =
-              supabase.storage.from('travel-receipts').getPublicUrl(path);
-
-          debugPrint(
-            '[TravelClaim] STEP 2 Upload receipt DONE '
-                'index=$i path=$path bytes=${bytes.length}',
-          );
-        }
-
-
-        expensesToInsert.add({
-          'claim_id': claimId,
-          'organization_id': ctx.organizationId,
-          'expense_date': item['expense_date'],
-          'expense_type': item['expense_type'] ?? 'Other',
-          'description': item['description'] ?? '',
-          'amount': (item['amount'] as num?)?.toDouble() ?? 0.0,
-          'receipt_url': receiptUrl,
-        });
-      }
-      debugPrint(
-        '[TravelClaim] STEP 4 Insert travel_expenses START '
-            'claimId=$claimId rowCount=${expensesToInsert.length}',
-      );
-
-      if (expensesToInsert.isNotEmpty) {
-        await supabase
-            .from('travel_expenses')
-            .insert(expensesToInsert);
-      }
-
-      debugPrint(
-        '[TravelClaim] STEP 4 Insert travel_expenses DONE '
-            'claimId=$claimId rowCount=${expensesToInsert.length}',
-      );
-
-      debugPrint('[TravelClaim] STEP 5 Finalize START claimId=$claimId');
-
-      widget.onSuccess();
-
-      debugPrint('[TravelClaim] STEP 5 Finalize DONE claimId=$claimId');
-
-    } catch (error, stackTrace) {
-      debugPrint('[TravelClaim] SUBMIT FAILED error=$error');
-      debugPrint('[TravelClaim] SUBMIT FAILED stackTrace=$stackTrace');
 
       if (!mounted) return;
-
+      widget.onSuccess();
+    } catch (error) {
+      debugPrint('[TravelClaim] submit failed');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: Colors.red.shade600,
-          content: Text('Failed to submit travel claim: $error'),
+          content: Text(_errorText(error, 'Failed to submit travel claim. Please try again.')),
         ),
       );
-    }
-    finally {
+    } finally {
       if (mounted) setState(() => submitting = false);
     }
   }
@@ -805,13 +662,14 @@ class ExpenseClaimsList extends StatefulWidget {
   final String email;
   final Map<String, dynamic> userData;
   final int refreshKey;
-  const ExpenseClaimsList({required this.email, required this.userData, this.refreshKey = 0, Key? key}) : super(key: key);
+  final ExpenseRepository? repository;
+  const ExpenseClaimsList({required this.email, required this.userData, this.refreshKey = 0, this.repository, Key? key}) : super(key: key);
   @override
   State<ExpenseClaimsList> createState() => _ExpenseClaimsListState();
 }
 
 class _ExpenseClaimsListState extends State<ExpenseClaimsList> {
-  final supabase = Supabase.instance.client;
+  late final ExpenseRepository _expenses = widget.repository ?? ExpenseRepository();
   late Future<List<dynamic>> _future;
 
   @override
@@ -829,20 +687,12 @@ class _ExpenseClaimsListState extends State<ExpenseClaimsList> {
   }
 
   Future<List<dynamic>> _fetch() async {
-    debugPrint("===== EXPENSE FETCH VIA RPC =====");
-    debugPrint("userData = ${widget.userData}");
-
-    final orgId = widget.userData['organization_id']?.toString();
-
-    final rows = await supabase.rpc(
-      'get_my_expense_claims',
-      params: {
-        '_organization_id': (orgId == null || orgId.isEmpty) ? null : orgId,
-      },
-    );
-
-    debugPrint('Expense rows from RPC: $rows');
-    return (rows as List?) ?? [];
+    // Claims carry category_id only: the names come from the category list (best effort).
+    List<Map<String, dynamic>> categories = const [];
+    try {
+      categories = await _expenses.categories();
+    } catch (_) {}
+    return _expenses.claims(categories: categories);
   }
 
 
@@ -946,11 +796,17 @@ class ExpenseClaimForm extends StatefulWidget {
   final Map<String, dynamic> userData;
   final VoidCallback onCancel;
   final VoidCallback onSuccess;
+  final ExpenseRepository? repository;
+
+  /// Tests only: starts the approval chain after the claim is stored.
+  final WorkflowRepository? workflowRepository;
   const ExpenseClaimForm({
     required this.email,
     required this.userData,
     required this.onCancel,
     required this.onSuccess,
+    this.repository,
+    this.workflowRepository,
     Key? key,
   }) : super(key: key);
   @override
@@ -965,7 +821,11 @@ class _ExpenseClaimFormState extends State<ExpenseClaimForm> {
   List<Map<String, dynamic>> categories = [];
   List<Map<String, dynamic>> items = [];
   bool submitting = false;
-  final supabase = Supabase.instance.client;
+  late final ExpenseRepository _expenses = widget.repository ?? ExpenseRepository();
+  late final WorkflowRepository _workflows = widget.workflowRepository ?? WorkflowRepository();
+
+  /// The employee's own claims, read to know what is already used this month in a category (policy pre-check).
+  List<Map<String, dynamic>> _ownClaims = const [];
 
   static const int _maxFileBytes = 5 * 1024 * 1024;
   static const int _maxReceiptsPerClaim = 5;
@@ -983,21 +843,72 @@ class _ExpenseClaimFormState extends State<ExpenseClaimForm> {
   }
 
   Future<void> _fetchCategories() async {
-    final orgId = widget.userData['organization_id']?.toString();
-    if (orgId == null || orgId.isEmpty) return;
-    // Website: eq is_active=true, order by "name" (NOT category_name)
-    final res = await supabase
-        .from('expense_categories')
-        .select('id, name, monthly_limit')
-        .eq('organization_id', orgId)
-        .eq('is_active', true)
-        .order('name');
-    if (!mounted) return;
-    setState(() => categories = List<Map<String, dynamic>>.from(res));
+    try {
+      final res = await _expenses.categories();
+      if (!mounted) return;
+      setState(() => categories = res);
+    } catch (_) {
+      // The category is optional: the form still works without the list.
+    }
+    try {
+      final own = await _expenses.claims(categories: categories);
+      if (mounted) _ownClaims = own;
+    } catch (_) {
+      // Best effort: without it the monthly-limit check counts only this claim.
+    }
   }
 
   int get _totalReceiptCount => items.where((i) => i['receipt'] != null).length;
   double get _totalAmount => items.fold<double>(0.0, (s, i) => s + ((i['amount'] as num?)?.toDouble() ?? 0.0));
+
+  /// The first thing the organization's expense policy would object to, from the real category rows and what this
+  /// employee has already claimed in the category this month (see [expensePolicyIssue]). It is advice, not a block:
+  /// the server decides, and only when the organization enforces the policy.
+  String? _policyIssue({List<ExpenseLine>? lines}) {
+    final total = lines == null ? _totalAmount : lines.fold<double>(0, (s, l) => s + l.amount);
+    final hasReceipt = lines == null ? _totalReceiptCount > 0 : lines.any((l) => l.receipt != null);
+    final dateRaw = (lines != null && lines.isNotEmpty ? lines.first.expenseDate : items.first['expense_date']).toString();
+    final date = DateTime.tryParse(dateRaw) ?? DateTime.now();
+    final used = selectedCategoryId == null
+        ? 0.0
+        : expenseUsedThisMonth(_ownClaims, categoryId: selectedCategoryId!, date: date);
+    return expensePolicyIssue(
+      categories: categories,
+      categoryId: selectedCategoryId,
+      total: total,
+      usedThisMonth: used,
+      hasReceipt: hasReceipt,
+    );
+  }
+
+  List<Widget> _categoryHints() {
+    // The category must be chosen before a hint makes sense (no category is only "required" when submitting).
+    if (selectedCategoryId == null) return const [];
+    final issue = _policyIssue();
+    return [
+      if (issue != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(issue, style: GoogleFonts.montserrat(fontSize: 11, color: Colors.orange.shade800)),
+        ),
+    ];
+  }
+
+  /// Warns before sending a claim the policy would object to; true when the employee chooses to submit anyway.
+  Future<bool> _confirmDespitePolicy(String issue) async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Check before submitting'),
+        content: Text('$issue\n\nYour organization may reject this claim. Receipts can only be attached when the receipt service is available.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Review')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Submit anyway')),
+        ],
+      ),
+    );
+    return go == true;
+  }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
@@ -1007,104 +918,65 @@ class _ExpenseClaimFormState extends State<ExpenseClaimForm> {
     }
     setState(() => submitting = true);
     try {
-      final ctx = await _resolveClaimContext(userData: widget.userData);
-      if (ctx == null) throw 'Employee context not found';
-
-      // === Insert expense claim ===
-      // claim_number is set by DB trigger.
-      final firstItem = items.first;
-
-      final firstExpenseDate = firstItem['expense_date'];
-
-      final firstAmount =
-          (firstItem['amount'] as num?)?.toDouble() ?? 0.0;
-      final claimIdResult = await supabase.rpc(
-        'create_my_expense_claim',
-        params: {
-          '_employee_id': ctx.employeeId,
-          '_organization_id': ctx.organizationId,
-          '_category_id': selectedCategoryId,
-          '_title': _titleController.text.trim(),
-          '_description': _descriptionController.text.trim(),
-          '_claim_date': DateFormat('yyyy-MM-dd').format(DateTime.now()),
-          '_expense_date': firstExpenseDate,
-          '_amount': firstAmount,
-          '_total_amount': _totalAmount,
-        },
-      );
-      final claimId = claimIdResult?.toString();
-      if (claimId == null || claimId.isEmpty) {
-        throw StateError('Expense claim was not created (empty id returned)');
-      }
-
-      // === Upload receipts + insert line items ===
-      final List<Map<String, dynamic>> toInsert = [];
-      for (int i = 0; i < items.length; i++) {
-        final item = items[i];
+      final lines = <ExpenseLine>[];
+      for (final item in items) {
         final desc = (item['description'] as String?)?.trim() ?? '';
         final amount = (item['amount'] as num?)?.toDouble() ?? 0.0;
-        // Website: skip empty lines
+        // Same as the website: empty lines are skipped (and their receipt is not uploaded).
         if (desc.isEmpty || amount <= 0) continue;
-        String? receiptUrl;
-        if (item['receipt'] != null) {
-          final file = item['receipt'] as PlatformFile;
-          final ext = (file.extension ?? 'jpg').toLowerCase();
-          // Website path: {authUid}/{claimId}/{index}_{ts}.{ext}
-          final path = '${ctx.authUid}/$claimId/${i}_${DateTime.now().millisecondsSinceEpoch}.$ext';
+        final file = item['receipt'] as PlatformFile?;
+        lines.add(ExpenseLine(
+          expenseDate: item['expense_date'].toString(),
+          description: desc,
+          amount: amount,
+          receipt: file == null ? null : await _readReceipt(file),
+        ));
+      }
+      if (lines.isEmpty) throw StateError('At least one valid expense line item is required');
 
-          await supabase.storage.from('expense-receipts').uploadBinary(
-            path,
-            await File(file.path!).readAsBytes(),
-            fileOptions: FileOptions(contentType: _mimeFor(ext), upsert: false),
-          );
-          // Website uses a 1-hour signed URL (bucket is private).
-          receiptUrl = await supabase.storage.from('expense-receipts').createSignedUrl(path, 60 * 60);
+      // The policy pre-check, on the real category data: the employee is told what the organization's policy would
+      // object to and chooses. (Whether it is enforced is the server's decision, which the app cannot read.)
+      final issue = _policyIssue(lines: lines);
+      if (issue != null) {
+        final go = await _confirmDespitePolicy(issue);
+        if (!go || !mounted) {
+          if (mounted) setState(() => submitting = false);
+          return;
         }
-
-        toInsert.add({
-          'claim_id': claimId,
-          'organization_id': ctx.organizationId,
-          'expense_date': item['expense_date'],
-          'description': desc,
-          'amount': amount,
-          'receipt_url': receiptUrl,
-        });
-      }
-      if (toInsert.isEmpty) {
-        throw Exception('At least one valid expense line item is required');
       }
 
-      debugPrint(
-        '[ExpenseClaim] Finalizing claim with ${toInsert.length} item(s)',
+      final created = await _expenses.createClaim(
+        title: _titleController.text.trim(),
+        description: _descriptionController.text.trim(),
+        categoryId: selectedCategoryId,
+        lines: lines,
       );
 
-      await supabase.rpc(
-        'finalize_my_expense_claim',
-        params: {
-          '_claim_id': claimId,
-          '_items': toInsert,
-        },
-      );
-
-      debugPrint('[ExpenseClaim] Claim submitted successfully');
-
-
-      // DO NOT call initialize_workflow — RPC does not exist.
-      widget.onSuccess();
-    } catch (e, stackTrace) {
-      debugPrint('[ExpenseClaim] Submission failed: $e');
-      debugPrint('[ExpenseClaim] Stack trace: $stackTrace');
+      // The claim is stored. Start its approval chain as a separate step, like the website; a failure here is not a
+      // failed claim (the call never throws), it only changes what the employee is told.
+      final routed = await _workflows.initialize(WorkflowRepository.expenses, created['id']?.toString());
 
       if (!mounted) return;
-
+      if (!routed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.orange.shade800,
+            content: const Text("Claim submitted. We couldn't confirm that approval routing started, so your manager may not be notified yet."),
+          ),
+        );
+      }
+      widget.onSuccess();
+    } catch (e) {
+      // Status only (never the server's text or any claim data), so a failure can be told apart in the log.
+      debugPrint('[ExpenseClaim] submission failed: ${e is ApiException ? e.statusCode : e.runtimeType}');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: Colors.red.shade600,
-          content: Text('Failed to submit expense claim: $e'),
+          content: Text(expenseSubmitErrorMessage(e)),
         ),
       );
-    }
-    finally {
+    } finally {
       if (mounted) setState(() => submitting = false);
     }
   }
@@ -1130,6 +1002,7 @@ class _ExpenseClaimFormState extends State<ExpenseClaimForm> {
             }).toList(),
             onChanged: (v) => setState(() => selectedCategoryId = v),
           ),
+          ..._categoryHints(),
           const SizedBox(height: 16),
           TextFormField(
             controller: _descriptionController,

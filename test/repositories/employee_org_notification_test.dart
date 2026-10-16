@@ -50,16 +50,13 @@ void main() {
       expect(m['full_name'], 'Ravi');
     });
 
-    test('updateMe: snake_case UI fields -> camelCase body; the sign-in email is never sent', () async {
-      final s = await signedIn((req) async => ok({'id': testEmployeeId, 'phone': '99'}));
-      await EmployeeRepository(auth: s.auth).updateMe({
+    test('updateMe: snake_case UI fields -> camelCase body, returns the saved record', () async {
+      final s = await signedIn((req) async => ok({'id': testEmployeeId, 'phone': '99', 'bloodGroup': 'O+'}));
+      final saved = await EmployeeRepository(auth: s.auth).updateMe({
         'phone': '99',
         'date_of_birth': '1990-05-17',
         'blood_group': 'O+',
-        'bank_ifsc_code': 'HDFC0001',
-        'aadhaar_number': '1111',
         'emergency_contact_relationship': 'Sister',
-        'email': 'hacker@evil.com',
       });
       expect(s.last.method, 'PATCH');
       expect(s.last.path, '/organizations/$testOrgId/employees/me');
@@ -67,10 +64,19 @@ void main() {
         'phone': '99',
         'dateOfBirth': '1990-05-17',
         'bloodGroup': 'O+',
-        'bankIfscCode': 'HDFC0001',
-        'aadhaarNumber': '1111',
         'emergencyContactRelationship': 'Sister',
       });
+      expect(saved['blood_group'], 'O+');
+    });
+
+    test('updateMe refuses HR-managed fields and the sign-in email before any request is made', () async {
+      final s = await signedIn((req) async => ok({'id': testEmployeeId}));
+      final repo = EmployeeRepository(auth: s.auth);
+      final before = s.requests.length;
+      for (final field in ['bank_name', 'bank_account_no', 'bank_ifsc_code', 'pan_no', 'aadhaar_number', 'uan_no', 'department', 'designation', 'grade_code', 'employment_status', 'salary', 'email']) {
+        await expectLater(repo.updateMe({'phone': '9123456789', field: 'x'}), throwsArgumentError, reason: field);
+      }
+      expect(s.requests.length, before, reason: 'nothing is sent when a restricted field is present');
     });
 
     test('setAvatarUrl sends the url, or null to remove the photo', () async {

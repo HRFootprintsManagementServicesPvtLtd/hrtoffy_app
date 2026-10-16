@@ -494,7 +494,10 @@ class SkeletonOTRecords extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Shown inside a SliverToBoxAdapter, so it must size itself (an unbounded ListView throws).
     return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16),
       itemCount: 6,
       itemBuilder: (_, __) => const Padding(
@@ -1231,7 +1234,10 @@ class SkeletonGoals extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Shown inside a SliverToBoxAdapter, so it must size itself (an unbounded ListView throws).
     return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
       padding: const EdgeInsets.all(14),
       itemCount: 5,
       itemBuilder: (_, __) {
@@ -1337,7 +1343,12 @@ class SkeletonMessages extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
 
+    // Shown inside a SliverToBoxAdapter, so it must size itself (an unbounded ListView throws).
     return ListView.builder(
+
+      shrinkWrap: true,
+
+      physics: const NeverScrollableScrollPhysics(),
 
       padding:
       const EdgeInsets.all(16),

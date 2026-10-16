@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dashboard_screen.dart';
@@ -8,13 +7,26 @@ import 'manager/manager_dashboard_screen.dart';
 import 'otp_password_reset_dialog.dart';
 import 'forgot_password_dialog.dart';
 import '../widgets/employee_ui.dart';
-import 'package:uuid/uuid.dart';
 import '../core/api/api_client.dart';
 import '../core/auth/auth_service.dart';
-import '../core/feature_flags.dart';
+import '../core/manager_access.dart';
+
+/// The screen a signed-in AWS user starts on, decided from `/auth/resolve-user` (the role in [AuthUser]).
+/// Used by sign-in and by the splash so both land in the same place: managers on the manager dashboard,
+/// everyone else on the employee dashboard.
+Widget awsHomeScreenFor(AuthUser user) {
+  if (user.isManager)
+    return managerScreen(() => ManagerDashboardScreen(userEmail: user.email));
+  return DashboardScreen(email: user.email, employeeId: user.employeeId ?? '');
+}
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({Key? key}) : super(key: key);
+  /// Overridable for tests; default to the app's session service and [awsHomeScreenFor].
+  final AuthService? authService;
+  final Widget Function(AuthUser user)? homeBuilder;
+
+  const LoginScreen({Key? key, this.authService, this.homeBuilder})
+    : super(key: key);
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
@@ -22,16 +34,13 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _mobileController = TextEditingController();
-  final _otpController = TextEditingController();
 
-  bool _showMobileLogin = false;
-  bool _showOtpField = false;
-  bool _isOtpLoading = false;
+  AuthService get _auth => widget.authService ?? AuthService.instance;
+
   bool _isLoading = false, _obscurePassword = true;
   String? _error;
 
-  /// AWS-backend password login (enabled with --dart-define=USE_AWS_AUTH=true).
+  /// AWS-backend password login.
   /// Signs in via /auth/login, then routes on the role from /auth/resolve-user.
   Future<AuthOrganization?> _pickOrganization(List<AuthOrganization> orgs) {
     return showDialog<AuthOrganization>(
@@ -50,19 +59,30 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loginWithAws({String? organizationId}) async {
-    setState(() { _isLoading = true; _error = null; });
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
     try {
-      final user = await AuthService.instance.login(_emailController.text, _passwordController.text.trim(), organizationId: organizationId);
-      if ((user.employeeId ?? '').isEmpty) { setState(() => _error = "Employee not found"); return; }
-      await Geolocator.requestPermission();
-      // FCM token registration is skipped here: it writes to Supabase, and the
-      // AWS backend has no FCM-token endpoint yet.
-      if (!mounted) return;
-      if (user.isManager) {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => ManagerDashboardScreen(userEmail: user.email)));
-      } else {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(email: user.email, employeeId: user.employeeId!)));
+      final user = await _auth.login(
+        _emailController.text,
+        _passwordController.text.trim(),
+        organizationId: organizationId,
+      );
+      if ((user.employeeId ?? '').isEmpty) {
+        setState(() => _error = "Employee not found");
+        return;
       }
+      await _showLocationDisclosure();
+      // Push listeners start now; the device token is not stored (no AWS endpoint for it yet).
+      await FirebaseNotificationService.startForUser(user.email);
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => (widget.homeBuilder ?? awsHomeScreenFor)(user),
+        ),
+      );
     } on MultipleOrganizationsException catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
@@ -71,31 +91,18 @@ class _LoginScreenState extends State<LoginScreen> {
     } on AuthFlowException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } on ApiException catch (e) {
-      if (mounted) setState(() => _error = e.isNetworkError ? "Network error. Please try again." : (e.isUnauthorized ? "Invalid credentials" : e.message));
+      if (mounted)
+        setState(
+          () => _error = e.isNetworkError
+              ? "Network error. Please try again."
+              : (e.isUnauthorized ? "Invalid credentials" : e.message),
+        );
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  Future<void> _login() async {
-    if (FeatureFlags.useAwsAuth) return _loginWithAws();
-    setState(() { _isLoading = true; _error = null; });
-    try {
-      final response = await Supabase.instance.client.auth.signInWithPassword(email: _emailController.text.trim(), password: _passwordController.text.trim());
-      if (response.user == null) { setState(() => _error = "Invalid credentials"); return; }
-      final empData = await Supabase.instance.client.from("employee_records").select("id, emp_role").eq("email", response.user!.email!).maybeSingle();
-      if (empData == null) { setState(() => _error = "Employee not found"); return; }
-      await Geolocator.requestPermission();
-      await FirebaseNotificationService.setupFCM(userEmail: response.user!.email!);
-      if (!mounted) return;
-      if (empData["emp_role"] == "manager") {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => ManagerDashboardScreen(userEmail: _emailController.text.trim())));
-      } else {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(email: _emailController.text.trim(), employeeId: empData["id"])));
-      }
-    } on AuthException catch (e) { setState(() => _error = e.message); }
-    finally { setState(() => _isLoading = false); }
-  }
+  Future<void> _login() => _loginWithAws();
 
   Future<void> _showForgotPassword() async {
     final email = await showDialog<String>(
@@ -110,127 +117,32 @@ class _LoginScreenState extends State<LoginScreen> {
       );
     }
   }
-  Future<void> _sendOtp() async {
-    setState(() {
-      _isOtpLoading = true;
-      _error = null;
-    });
-    try {
-      final response = await Supabase.instance.client.functions.invoke(
-        'send-phone-otp',
-        body: {
-          'phone': _mobileController.text.trim(),
-          'purpose': 'login',
-          'idempotency_key': const Uuid().v4(),
-        },
-      );
-      final data = response.data;
-      if (response.status != 200 || data['success'] != true) {
-        setState(() {
-          _error = data['error'] ?? 'Failed to send OTP';
-        });
-        return;
-      }
-      setState(() {
-        _showOtpField = true;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("OTP sent successfully")),
-      );
-    } catch (e) {
-      String message = "Something went wrong";
-      if (e is FunctionException) {
-        final details = e.details;
-        if (details is Map && details['error'] != null) {
-          message = details['error'].toString();
-        } else {
-          message = e.reasonPhrase ?? message;
-        }
-      } else {
-        message = e.toString();
-      }
-      setState(() {
-        _error = message;
-      });
-    } finally {
-      setState(() {
-        _isOtpLoading = false;
-      });
-    }
-  }
-  Future<void> _verifyOtp() async {
-    setState(() {
-      _isOtpLoading = true;
-      _error = null;
-    });
-    try {
-      final response = await Supabase.instance.client.functions.invoke(
-        'verify-phone-otp',
-        body: {
-          'phone': _mobileController.text.trim(),
-          'otp': _otpController.text.trim(),
-          'purpose': 'login',
-        },
-      );
-      final data = response.data;
-      if (response.status != 200 || data['success'] != true) {
-        setState(() {
-          _error = data['error'] ?? 'OTP verification failed';
-        });
-        return;
-      }
-      final authResponse = await Supabase.instance.client.auth.setSession(
-        data['refresh_token'],
-      );
-      if (authResponse.session == null) {
-        throw Exception("Failed to create session");
-      }
+
+  Future<void> _showLocationDisclosure() async {
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Text("Location Permission Required"),
+        content: const Text(
+          "HR Toffy uses your location to verify employee attendance.\n\n"
+          "Background location is required so attendance verification can continue while the app is running in the background.\n\n"
+          "Your location is used only for attendance purposes and is never shared for advertising.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Continue"),
+          ),
+        ],
+      ),
+    );
+    if (result == true) {
       await Geolocator.requestPermission();
-      await FirebaseNotificationService.setupFCM(
-        userEmail: data['employee']['email'],
-      );
-      if (!mounted) return;
-      if (data['employee']['emp_role'] == "manager") {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ManagerDashboardScreen(
-              userEmail: data['employee']['email'],
-            ),
-          ),
-        );
-      } else {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => DashboardScreen(
-              email: data['employee']['email'],
-              employeeId: data['employee']['id'],
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      String message = "Something went wrong";
-      if (e is FunctionException) {
-        final details = e.details;
-
-        if (details is Map && details['error'] != null) {
-          message = details['error'].toString();
-        } else {
-          message = e.reasonPhrase ?? message;
-        }
-      } else {
-        message = e.toString();
-      }
-
-      setState(() {
-        _error = message;
-      });
-    } finally {
-      setState(() {
-        _isOtpLoading = false;
-      });
     }
   }
 
@@ -239,7 +151,13 @@ class _LoginScreenState extends State<LoginScreen> {
     return Scaffold(
       backgroundColor: Colors.white,
       body: Container(
-        decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFFD7E8FF), Colors.white], begin: Alignment.topCenter, end: Alignment.bottomCenter)),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFFD7E8FF), Colors.white],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
         child: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(32),
@@ -254,86 +172,74 @@ class _LoginScreenState extends State<LoginScreen> {
                     children: [
                       Text("Welcome Back", style: EmployeeUi.header(24)),
                       const SizedBox(height: 8),
-                      Text("Sign in to continue to your workspace", style: GoogleFonts.montserrat(fontSize: 13, color: Colors.black54)),
+                      Text(
+                        "Sign in to continue to your workspace",
+                        style: GoogleFonts.montserrat(
+                          fontSize: 13,
+                          color: Colors.black54,
+                        ),
+                      ),
                       const SizedBox(height: 32),
-                      TextField(controller: _emailController, decoration: const InputDecoration(labelText: "Email", prefixIcon: Icon(Icons.email_outlined))),
+                      TextField(
+                        controller: _emailController,
+                        decoration: const InputDecoration(
+                          labelText: "Email",
+                          prefixIcon: Icon(Icons.email_outlined),
+                        ),
+                      ),
                       const SizedBox(height: 16),
-                      TextField(controller: _passwordController, obscureText: _obscurePassword, decoration: InputDecoration(labelText: "Password", prefixIcon: const Icon(Icons.lock_outline), suffixIcon: IconButton(icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility), onPressed: () => setState(() => _obscurePassword = !_obscurePassword)))),
-                      const SizedBox(height: 32),
-                      _isLoading ? const CircularProgressIndicator() : ElevatedButton(onPressed: _login, style: ElevatedButton.styleFrom(backgroundColor: EmployeeUi.primary, foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 54), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), child: const Text("Sign In", style: TextStyle(fontWeight: FontWeight.bold))),
-                      if (_error != null) Padding(padding: const EdgeInsets.only(top: 16), child: Text(_error!, style: const TextStyle(color: Colors.red))),
-                      TextButton(onPressed: _showForgotPassword, child: const Text("Forgot Password?", style: TextStyle(color: Colors.grey))),
-                      const SizedBox(height: 10),
-
-                      TextButton.icon(
-                        onPressed: () {
-                          setState(() {
-                            _showMobileLogin = !_showMobileLogin;
-                            _showOtpField = false;
-                            _error = null;
-                          });
-                        },
-                        icon: const Icon(Icons.phone_android, color: Colors.green),
-                        label: Text(
-                          _showMobileLogin
-                              ? "Back to Email Login"
-                              : "Login with Mobile Number",
-                          style: const TextStyle(
-                            color: Colors.green,
-                            fontWeight: FontWeight.w600,
+                      TextField(
+                        controller: _passwordController,
+                        obscureText: _obscurePassword,
+                        decoration: InputDecoration(
+                          labelText: "Password",
+                          prefixIcon: const Icon(Icons.lock_outline),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _obscurePassword
+                                  ? Icons.visibility_off
+                                  : Icons.visibility,
+                            ),
+                            onPressed: () => setState(
+                              () => _obscurePassword = !_obscurePassword,
+                            ),
                           ),
                         ),
                       ),
-
-                      if (_showMobileLogin) ...[
-                        const SizedBox(height: 20),
-
-                        TextField(
-                          controller: _mobileController,
-                          keyboardType: TextInputType.phone,
-                          decoration: const InputDecoration(
-                            labelText: "Mobile Number",
-                            hintText: "9876543210",
-                            prefixIcon: Icon(Icons.phone),
+                      const SizedBox(height: 32),
+                      _isLoading
+                          ? const CircularProgressIndicator()
+                          : ElevatedButton(
+                              onPressed: _login,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: EmployeeUi.primary,
+                                foregroundColor: Colors.white,
+                                minimumSize: const Size(double.infinity, 54),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              child: const Text(
+                                "Sign In",
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                      if (_error != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 16),
+                          child: Text(
+                            _error!,
+                            style: const TextStyle(color: Colors.red),
                           ),
                         ),
-
-                        const SizedBox(height: 15),
-
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton(
-                            onPressed: _isOtpLoading ? null : _sendOtp,
-                            child: _isOtpLoading
-                                ? const CircularProgressIndicator()
-                                : const Text("Send OTP"),
-                          ),
+                      TextButton(
+                        onPressed: _showForgotPassword,
+                        child: const Text(
+                          "Forgot Password?",
+                          style: TextStyle(color: Colors.grey),
                         ),
-
-                        if (_showOtpField) ...[
-                          const SizedBox(height: 20),
-
-                          TextField(
-                            controller: _otpController,
-                            keyboardType: TextInputType.number,
-                            maxLength: 6,
-                            decoration: const InputDecoration(
-                              labelText: "Enter OTP",
-                              prefixIcon: Icon(Icons.lock_clock),
-                            ),
-                          ),
-
-                          const SizedBox(height: 10),
-
-                          SizedBox(
-                            width: double.infinity,
-                            child: ElevatedButton(
-                              onPressed: _verifyOtp,
-                              child: const Text("Verify OTP"),
-                            ),
-                          ),
-                        ]
-                      ],
+                      ),
+                      const SizedBox(height: 10),
                     ],
                   ),
                 ),
@@ -345,4 +251,3 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 }
-

@@ -12,6 +12,9 @@ class ChatConversation {
 
   final String? avatar;
 
+  /// Unread messages in this conversation (from the API; not shown in the UI yet).
+  final int unreadCount;
+
   ChatConversation({
 
     required this.id,
@@ -25,6 +28,8 @@ class ChatConversation {
     required this.latestTime,
 
     this.avatar,
+
+    this.unreadCount = 0,
   });
 
   factory ChatConversation.fromMap(
@@ -50,6 +55,8 @@ class ChatConversation {
           : null,
 
       avatar: map['avatar'],
+
+      unreadCount: (map['unread_count'] as num?)?.toInt() ?? 0,
     );
   }
 }

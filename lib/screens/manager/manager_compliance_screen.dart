@@ -1,88 +1,98 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../../widgets/manager_drawer.dart';
+import '../../core/api/json_case.dart';
+import '../../repositories/compliance_repository.dart';
 import '../../widgets/drawer_route.dart';
+import '../../widgets/manager_drawer.dart';
+import 'widgets/manager_state_views.dart';
 
+/// Shown for the destinations that have no route at all (Pay Equity, Auditor Pack, gratuity payouts).
+const String kComplianceUnavailableMessage = "This isn't available yet";
+
+/// The one state shown when the server refuses compliance to the caller (403): the owner's decision is that compliance
+/// is for HR managers and above.
+const String kComplianceHrOnlyMessage =
+    'Compliance is available to HR managers and above';
+
+/// Manager compliance hub. Every tab and quick link reads the real AWS route (see [ComplianceRepository]); all calls are
+/// reads. A plain manager is refused by the server (403) on all of them, which turns the whole screen into
+/// [kComplianceHrOnlyMessage]; nothing is faked or hidden.
 class ManagerComplianceScreen extends StatefulWidget {
   final String userEmail;
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
+  final ComplianceRepository? complianceRepository;
 
   const ManagerComplianceScreen({
     super.key,
     required this.userEmail,
     required this.userData,
     required this.fetchHrmsContext,
+    this.complianceRepository,
   });
 
   @override
-  State<ManagerComplianceScreen> createState() => _ManagerComplianceScreenState();
+  State<ManagerComplianceScreen> createState() =>
+      _ManagerComplianceScreenState();
 }
 
-class _ManagerComplianceScreenState extends State<ManagerComplianceScreen> with SingleTickerProviderStateMixin {
-  final supabase = Supabase.instance.client;
+class _ManagerComplianceScreenState extends State<ManagerComplianceScreen>
+    with SingleTickerProviderStateMixin {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   late TabController _tabController;
+  late final ComplianceRepository _repo =
+      widget.complianceRepository ?? ComplianceRepository();
 
-  bool loading = true;
-  Map<String, dynamic>? healthSnapshot;
-  String activeQuickLink = 'none'; // none, posh, maternity, clra, pay_equity, apprentices, auditor
+  String activeQuickLink =
+      'none'; // none, posh, maternity, clra, pay_equity, apprentices, auditor
+
+  bool healthLoading = true;
+  int? healthScore;
+  LoadIssue? healthIssue;
+
+  Future<Map<String, String>>? _namesFuture;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 6, vsync: this);
-    _fetchComplianceData();
-  }
-
-  Future<void> _fetchComplianceData() async {
-    try {
-      final orgId = widget.userData['organization_id'];
-      
-      dynamic snapshot;
-      // Try org_id first
-      try {
-        snapshot = await supabase
-            .from('compliance_health_snapshots')
-            .select()
-            .eq('org_id', orgId)
-            .order('snapshot_date', ascending: false)
-            .limit(1)
-            .maybeSingle();
-      } catch (e1) {
-        // Try organization_id
-        try {
-          snapshot = await supabase
-              .from('compliance_health_snapshots')
-              .select()
-              .eq('organization_id', orgId)
-              .order('snapshot_date', ascending: false)
-              .limit(1)
-              .maybeSingle();
-        } catch (e2) {
-          debugPrint("Compliance snapshot both failed: $e1 / $e2");
-        }
-      }
-
-      if (mounted) {
-        setState(() {
-          healthSnapshot = snapshot;
-          loading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint("Compliance health snapshot critical error: $e");
-      if (mounted) setState(() => loading = false);
-    }
+    _loadHealth();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadHealth() async {
+    setState(() => healthLoading = true);
+    try {
+      final s = await _repo.healthScore();
+      if (!mounted) return;
+      setState(() {
+        healthScore = s;
+        healthIssue = null;
+        healthLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        healthIssue = classifyLoadIssue(e);
+        healthLoading = false;
+      });
+    }
+  }
+
+  bool get _blocked => healthIssue == LoadIssue.forbidden;
+
+  /// Employee names for the registers, fetched once; a failure means "names unknown" (shown as "Employee").
+  Future<Map<String, String>> _names() {
+    return _namesFuture ??= _repo.employeeNames().catchError(
+      (_) => <String, String>{},
+    );
   }
 
   @override
@@ -107,75 +117,100 @@ class _ManagerComplianceScreenState extends State<ManagerComplianceScreen> with 
             icon: const Icon(Icons.menu, color: Colors.black),
           ),
         ],
-        bottom: activeQuickLink == 'none' ? PreferredSize(
-          preferredSize: const Size.fromHeight(48),
-          child: Container(
-            color: Colors.white,
-            child: TabBar(
-              controller: _tabController,
-              isScrollable: true,
-              indicatorColor: const Color(0xFF1E90FF),
-              indicatorWeight: 3,
-              labelColor: const Color(0xFF1E90FF),
-              unselectedLabelColor: Colors.grey,
-              labelStyle: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.bold),
-              tabs: const [
-                Tab(text: "Wage Registers"),
-                Tab(text: "Statutory Returns"),
-                Tab(text: "Factories Act"),
-                Tab(text: "Shops & Estb."),
-                Tab(text: "Statutory Bonus"),
-                Tab(text: "Gratuity"),
-              ],
-            ),
-          ),
-        ) : null,
+        bottom: activeQuickLink == 'none' && !_blocked
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(48),
+                child: Container(
+                  color: Colors.white,
+                  child: TabBar(
+                    controller: _tabController,
+                    isScrollable: true,
+                    indicatorColor: const Color(0xFF1E90FF),
+                    indicatorWeight: 3,
+                    labelColor: const Color(0xFF1E90FF),
+                    unselectedLabelColor: Colors.grey,
+                    labelStyle: GoogleFonts.montserrat(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    tabs: const [
+                      Tab(text: "Wage Registers"),
+                      Tab(text: "Statutory Returns"),
+                      Tab(text: "Factories Act"),
+                      Tab(text: "Shops & Estb."),
+                      Tab(text: "Statutory Bonus"),
+                      Tab(text: "Gratuity"),
+                    ],
+                  ),
+                ),
+              )
+            : null,
       ),
-      body: loading 
-          ? const Center(child: CircularProgressIndicator())
-          : _buildContent(),
+      body: _buildContent(),
     );
   }
 
   Widget _buildContent() {
+    // Nothing else is requested until the server has said whether the caller may see compliance at all.
+    if (healthLoading) return const Center(child: CircularProgressIndicator());
+    if (_blocked) {
+      return const ManagerInfoState(
+        kComplianceHrOnlyMessage,
+        icon: Icons.lock_outline_rounded,
+      );
+    }
     if (activeQuickLink != 'none') {
       return _buildQuickLinkView();
     }
 
-    return RefreshIndicator(
-      onRefresh: _fetchComplianceData,
-      child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        child: Column(
-          children: [
-            _buildHealthScoreWidget(),
-            _buildQuickLinks(),
-            const SizedBox(height: 20),
-            SizedBox(
-              height: 600,
-              child: TabBarView(
-                controller: _tabController,
-                children: [
-                  _WageRegistersTab(userData: widget.userData),
-                  _StatutoryReturnsTab(userData: widget.userData),
-                  _FactoriesActTab(userData: widget.userData),
-                  _ShopsEstablishmentTab(userData: widget.userData),
-                  _StatutoryBonusTab(userData: widget.userData),
-                  _GratuityTab(userData: widget.userData),
-                ],
-              ),
+    return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      child: Column(
+        children: [
+          _buildHealthScoreWidget(),
+          _buildQuickLinks(),
+          const SizedBox(height: 20),
+          SizedBox(
+            height: 600,
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _WageRegistersTab(repo: _repo, names: _names),
+                _StatutoryReturnsTab(repo: _repo),
+                _FactoriesActTab(repo: _repo),
+                _ShopsTab(repo: _repo),
+                _BonusTab(repo: _repo),
+                _GratuityTab(repo: _repo, names: _names),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
+  /// The score is shown only when the server has one: otherwise "-" with no ring, no colour judgement and no verdict.
   Widget _buildHealthScoreWidget() {
-    final score = healthSnapshot?['overall_score'] ?? 0;
+    final score = healthScore;
+    final known = score != null;
     Color color = Colors.red;
-    if (score >= 80) color = Colors.green;
-    else if (score >= 50) color = Colors.orange;
+    if (known && score >= 80) {
+      color = Colors.green;
+    } else if (known && score >= 50) {
+      color = Colors.orange;
+    }
+    final String headline;
+    if (healthLoading) {
+      headline = 'Loading...';
+    } else if (healthIssue != null) {
+      headline = 'Not available right now';
+    } else if (!known) {
+      headline = 'No score recorded yet';
+    } else if (score >= 80) {
+      headline = 'Your organization is well-guarded';
+    } else {
+      headline = 'Action required to improve score';
+    }
 
     return Container(
       width: double.infinity,
@@ -184,7 +219,13 @@ class _ManagerComplianceScreenState extends State<ManagerComplianceScreen> with 
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(24),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 10, offset: const Offset(0, 4))],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Row(
         children: [
@@ -192,31 +233,65 @@ class _ManagerComplianceScreenState extends State<ManagerComplianceScreen> with 
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text("Compliance Health Score", style: GoogleFonts.montserrat(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w600)),
+                Text(
+                  "Compliance Health Score",
+                  style: GoogleFonts.montserrat(
+                    fontSize: 12,
+                    color: Colors.grey,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 const SizedBox(height: 8),
                 Text(
-                  score >= 80 ? "Your organization is well-guarded" : "Action required to improve score",
-                  style: GoogleFonts.playfairDisplay(fontSize: 18, fontWeight: FontWeight.bold),
+                  headline,
+                  style: GoogleFonts.playfairDisplay(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ],
             ),
           ),
-          Stack(
-            alignment: Alignment.center,
-            children: [
-              SizedBox(
-                width: 60,
-                height: 60,
-                child: CircularProgressIndicator(
-                  value: score / 100,
-                  strokeWidth: 6,
-                  backgroundColor: Colors.grey.shade100,
-                  valueColor: AlwaysStoppedAnimation<Color>(color),
+          if (known)
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                SizedBox(
+                  width: 60,
+                  height: 60,
+                  child: CircularProgressIndicator(
+                    value: (score / 100).clamp(0.0, 1.0),
+                    strokeWidth: 6,
+                    backgroundColor: Colors.grey.shade100,
+                    valueColor: AlwaysStoppedAnimation<Color>(color),
+                  ),
+                ),
+                Text(
+                  "$score%",
+                  style: GoogleFonts.montserrat(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            )
+          else
+            Container(
+              width: 60,
+              height: 60,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.grey.shade100,
+              ),
+              child: Text(
+                "-",
+                style: GoogleFonts.montserrat(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
                 ),
               ),
-              Text("$score%", style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, fontSize: 14)),
-            ],
-          )
+            ),
         ],
       ),
     );
@@ -233,46 +308,115 @@ class _ManagerComplianceScreenState extends State<ManagerComplianceScreen> with 
         crossAxisSpacing: 10,
         children: [
           _quickLinkCard("POSH", Icons.gavel, const Color(0xFFFFECE6), 'posh'),
-          _quickLinkCard("Maternity", Icons.child_care, const Color(0xFFD7E8FF), 'maternity'),
-          _quickLinkCard("CLRA", Icons.engineering, const Color(0xFFDFF6E5), 'clra'),
-          _quickLinkCard("Pay Equity", Icons.balance, const Color(0xFFEBDFF6), 'pay_equity'),
-          _quickLinkCard("Apprentices", Icons.school, const Color(0xFFD4F3F7), 'apprentices'),
-          _quickLinkCard("Auditor Pack", Icons.archive, const Color(0xFFF5F5F5), 'auditor'),
+          _quickLinkCard(
+            "Maternity",
+            Icons.child_care,
+            const Color(0xFFD7E8FF),
+            'maternity',
+          ),
+          _quickLinkCard(
+            "CLRA",
+            Icons.engineering,
+            const Color(0xFFDFF6E5),
+            'clra',
+          ),
+          _quickLinkCard(
+            "Pay Equity",
+            Icons.balance,
+            const Color(0xFFEBDFF6),
+            'pay_equity',
+          ),
+          _quickLinkCard(
+            "Apprentices",
+            Icons.school,
+            const Color(0xFFD4F3F7),
+            'apprentices',
+          ),
+          _quickLinkCard(
+            "Auditor Pack",
+            Icons.archive,
+            const Color(0xFFF5F5F5),
+            'auditor',
+          ),
         ],
       ),
     );
   }
 
-  Widget _quickLinkCard(String label, IconData icon, Color color, String action) {
+  Widget _quickLinkCard(
+    String label,
+    IconData icon,
+    Color color,
+    String action,
+  ) {
     return InkWell(
       onTap: () => setState(() => activeQuickLink = action),
       child: Container(
-        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(16)),
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(16),
+        ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(icon, size: 24, color: Colors.black54),
             const SizedBox(height: 8),
-            Text(label, textAlign: TextAlign.center, style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87)),
+            Text(
+              label,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.montserrat(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildQuickLinkView() {
-    Widget content;
-    String title = activeQuickLink.replaceAll('_', ' ').toUpperCase();
-
+  Widget _quickLinkBody() {
     switch (activeQuickLink) {
-      case 'posh': content = _PoshComplianceView(userData: widget.userData); break;
-      case 'maternity': content = _MaternityComplianceView(userData: widget.userData); break;
-      case 'clra': content = _CLRAComplianceView(userData: widget.userData); break;
-      case 'pay_equity': content = _PayEquityView(userData: widget.userData); break;
-      case 'apprentices': content = _ApprenticesView(userData: widget.userData); break;
-      case 'auditor': content = _AuditorPackView(userData: widget.userData); break;
-      default: content = const Center(child: Text("Coming Soon"));
+      case 'posh':
+        return _SimpleList(
+          load: _repo.poshComplaints,
+          emptyText: 'No records found',
+          title: (r) => r['case_number']?.toString() ?? 'Complaint',
+          subtitle: (r) => _text(r['status']),
+        );
+      case 'maternity':
+        return _SimpleList(
+          load: _repo.maternityCases,
+          emptyText: 'No records found',
+          title: (r) {
+            final name = _text(r['employee_name']);
+            final type = _text(r['leave_type']);
+            return [name, type].where((s) => s.isNotEmpty).join(' - ');
+          },
+          subtitle: (r) => _dateOrEmpty(r['expected_delivery_date']),
+        );
+      case 'clra':
+        return _SimpleList(
+          load: _repo.contractors,
+          emptyText: 'No records found',
+          title: (r) => _text(r['name']),
+          subtitle: (r) => _text(r['license_number']),
+        );
+      case 'apprentices':
+        return _SimpleList(
+          load: _repo.apprentices,
+          emptyText: 'No records found',
+          title: (r) => _text(r['apprentice_name']),
+          subtitle: (r) => _text(r['trade']),
+        );
+      default: // pay_equity, auditor: no route
+        return const ManagerInfoState(kComplianceUnavailableMessage);
     }
+  }
+
+  Widget _buildQuickLinkView() {
+    final title = activeQuickLink.replaceAll('_', ' ').toUpperCase();
 
     return Column(
       children: [
@@ -284,97 +428,179 @@ class _ManagerComplianceScreenState extends State<ManagerComplianceScreen> with 
             children: [
               InkWell(
                 onTap: () => setState(() => activeQuickLink = 'none'),
-                child: Row(children: [const Icon(Icons.arrow_back, size: 18, color: Colors.blue), const SizedBox(width: 8), Text("Back", style: GoogleFonts.montserrat(color: Colors.blue, fontWeight: FontWeight.bold))]),
+                child: Row(
+                  children: [
+                    const Icon(Icons.arrow_back, size: 18, color: Colors.blue),
+                    const SizedBox(width: 8),
+                    Text(
+                      "Back",
+                      style: GoogleFonts.montserrat(
+                        color: Colors.blue,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
               ),
               const Spacer(),
-              Text(title, style: GoogleFonts.montserrat(fontWeight: FontWeight.bold)),
+              Text(
+                title,
+                style: GoogleFonts.montserrat(fontWeight: FontWeight.bold),
+              ),
             ],
           ),
         ),
-        Expanded(child: content),
+        Expanded(child: _quickLinkBody()),
       ],
     );
   }
+}
+
+String _text(dynamic v) => v?.toString() ?? '';
+
+String _dateOrEmpty(dynamic v, [String pattern = 'dd MMM yyyy']) {
+  final d = asDate(v);
+  return d == null ? '' : DateFormat(pattern).format(d);
+}
+
+/// An amount, or "-" when the server did not give one (never a made-up 0).
+String _money(dynamic v) {
+  final n = asNum(v);
+  if (n == null) return '-';
+  return '₹${NumberFormat.decimalPattern('en_IN').format(n)}';
+}
+
+Widget _statusChip(String text, Color color) => Container(
+  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+  decoration: BoxDecoration(
+    color: color.withValues(alpha: 0.1),
+    borderRadius: BorderRadius.circular(8),
+  ),
+  child: Text(
+    text.toUpperCase(),
+    style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.bold),
+  ),
+);
+
+/// A plain list of cards: title and subtitle from the row.
+class _SimpleList extends StatelessWidget {
+  const _SimpleList({
+    required this.load,
+    required this.emptyText,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final Future<List<Map<String, dynamic>>> Function() load;
+  final String emptyText;
+  final String Function(Map<String, dynamic>) title;
+  final String Function(Map<String, dynamic>) subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return ManagerLoader<List<Map<String, dynamic>>>(
+      load: load,
+      isEmpty: (r) => r.isEmpty,
+      emptyText: emptyText,
+      forbiddenMessage: kComplianceHrOnlyMessage,
+      builder: (context, rows) => ListView.builder(
+        padding: const EdgeInsets.all(20),
+        itemCount: rows.length,
+        itemBuilder: (context, i) {
+          final sub = subtitle(rows[i]);
+          return Card(
+            child: ListTile(
+              title: Text(
+                title(rows[i]),
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: sub.isEmpty ? null : Text(sub),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _Named {
+  const _Named(this.rows, this.names);
+  final List<Map<String, dynamic>> rows;
+  final Map<String, String> names;
+  String nameOf(Map<String, dynamic> r) =>
+      names[r['employee_id']?.toString()] ?? 'Employee';
 }
 
 // -----------------------------------------------------------------------------
 // 1. WAGE REGISTERS
 // -----------------------------------------------------------------------------
 class _WageRegistersTab extends StatefulWidget {
-  final Map<String, dynamic> userData;
-  const _WageRegistersTab({required this.userData});
+  const _WageRegistersTab({required this.repo, required this.names});
+  final ComplianceRepository repo;
+  final Future<Map<String, String>> Function() names;
 
   @override
   State<_WageRegistersTab> createState() => _WageRegistersTabState();
 }
 
-class _WageRegistersTabState extends State<_WageRegistersTab> with SingleTickerProviderStateMixin {
-  final supabase = Supabase.instance.client;
-  late TabController _subTabController;
-  List<dynamic> items = [];
-  bool loading = true;
+class _WageRegistersTabState extends State<_WageRegistersTab>
+    with SingleTickerProviderStateMixin {
+  late final TabController _sub = TabController(length: 3, vsync: this);
 
   @override
-  void initState() {
-    super.initState();
-    _subTabController = TabController(length: 3, vsync: this);
-    _subTabController.addListener(() {
-       if (!_subTabController.indexIsChanging) {
-         _fetchItems();
-       }
-    });
-    _fetchItems();
+  void dispose() {
+    _sub.dispose();
+    super.dispose();
   }
 
-  Future<void> _fetchItems() async {
-    if (!mounted) return;
-    setState(() => loading = true);
-    try {
-      String table = 'wage_register_fines';
-      if (_subTabController.index == 1) table = 'wage_register_deductions';
-      if (_subTabController.index == 2) table = 'wage_register_advances';
-
-      final orgId = widget.userData['organization_id'];
-      
-      // Step 1: Fetch core records without join to avoid relationship errors
-      dynamic res;
-      try {
-        res = await supabase.from(table).select().eq('org_id', orgId).order('created_at', ascending: false);
-      } catch (_) {
-        res = await supabase.from(table).select().eq('organization_id', orgId).order('created_at', ascending: false);
-      }
-
-      final List<Map<String, dynamic>> rawItems = List<Map<String, dynamic>>.from(res ?? []);
-      
-      // Step 2: Manually map employee names to avoid join issues
-      if (rawItems.isNotEmpty) {
-        final empIds = rawItems.map((i) => i['employee_id']).where((id) => id != null).toSet().toList();
-        if (empIds.isNotEmpty) {
-          final emps = await supabase.from('employee_records').select('id, full_name, employee_id').inFilter('id', empIds);
-          final empMap = {for (var e in emps) e['id']: e};
-          for (var item in rawItems) {
-            if (item['employee_id'] != null && empMap.containsKey(item['employee_id'])) {
-              item['employee_records'] = empMap[item['employee_id']];
-            }
-          }
-        }
-      }
-      
-      if (mounted) {
-        setState(() {
-          items = rawItems;
-          loading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint("Wage Register robust fetch error: $e");
-      if (mounted) {
-        setState(() {
-          items = [];
-          loading = false;
-        });
-      }
-    }
+  Widget _register(
+    String kind,
+    String descKey,
+    String amountKey,
+    String altDesc,
+  ) {
+    return ManagerLoader<_Named>(
+      load: () async {
+        final rows = await widget.repo.wageRegister(kind);
+        final names = rows.isEmpty ? <String, String>{} : await widget.names();
+        return _Named(rows, names);
+      },
+      isEmpty: (d) => d.rows.isEmpty,
+      emptyText: 'No records found',
+      forbiddenMessage: kComplianceHrOnlyMessage,
+      builder: (context, d) => ListView.builder(
+        padding: const EdgeInsets.all(20),
+        itemCount: d.rows.length,
+        itemBuilder: (context, i) {
+          final item = d.rows[i];
+          return Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: ListTile(
+              title: Text(
+                d.nameOf(item),
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              subtitle: Text(
+                _text(item[descKey]).isNotEmpty
+                    ? _text(item[descKey])
+                    : _text(item[altDesc]),
+                style: const TextStyle(fontSize: 11),
+              ),
+              trailing: Text(
+                _money(item[amountKey]),
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -382,35 +608,34 @@ class _WageRegistersTabState extends State<_WageRegistersTab> with SingleTickerP
     return Column(
       children: [
         TabBar(
-          controller: _subTabController,
+          controller: _sub,
           labelColor: const Color(0xFF1E90FF),
           unselectedLabelColor: Colors.grey,
           indicatorColor: const Color(0xFF1E90FF),
-          labelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          tabs: const [Tab(text: "Fines"), Tab(text: "Deductions"), Tab(text: "Advances")],
+          labelStyle: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+          ),
+          tabs: const [
+            Tab(text: "Fines"),
+            Tab(text: "Deductions"),
+            Tab(text: "Advances"),
+          ],
         ),
         Expanded(
-          child: loading 
-              ? const Center(child: CircularProgressIndicator())
-              : items.isEmpty 
-                  ? const Center(child: Text("No records found"))
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(20),
-                      itemCount: items.length,
-                      itemBuilder: (context, index) {
-                        final item = items[index];
-                        final emp = item['employee_records'];
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          child: ListTile(
-                            title: Text(emp?['full_name'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                            subtitle: Text(item['offense_description'] ?? item['damage_description'] ?? item['purpose'] ?? '', style: const TextStyle(fontSize: 11)),
-                            trailing: Text("₹${item['fine_amount'] ?? item['deduction_amount'] ?? item['advance_amount'] ?? 0}", style: const TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                        );
-                      },
-                    ),
+          child: TabBarView(
+            controller: _sub,
+            children: [
+              _register('fines', 'offense_description', 'fine_amount', 'notes'),
+              _register(
+                'deductions',
+                'damage_description',
+                'deduction_amount',
+                'notes',
+              ),
+              _register('advances', 'purpose', 'advance_amount', 'notes'),
+            ],
+          ),
         ),
       ],
     );
@@ -420,97 +645,87 @@ class _WageRegistersTabState extends State<_WageRegistersTab> with SingleTickerP
 // -----------------------------------------------------------------------------
 // 2. STATUTORY RETURNS
 // -----------------------------------------------------------------------------
-class _StatutoryReturnsTab extends StatefulWidget {
-  final Map<String, dynamic> userData;
-  const _StatutoryReturnsTab({required this.userData});
-
-  @override
-  State<_StatutoryReturnsTab> createState() => _StatutoryReturnsTabState();
-}
-
-class _StatutoryReturnsTabState extends State<_StatutoryReturnsTab> {
-  final supabase = Supabase.instance.client;
-  List<dynamic> filings = [];
-  bool loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchFilings();
-  }
-
-  Future<void> _fetchFilings() async {
-    try {
-      final orgId = widget.userData['organization_id'];
-      dynamic res;
-      try {
-        res = await supabase
-            .from('statutory_return_filings')
-            .select()
-            .eq('org_id', orgId)
-            .order('due_date', ascending: false);
-      } catch (e) {
-        res = await supabase
-            .from('statutory_return_filings')
-            .select()
-            .eq('organization_id', orgId)
-            .order('due_date', ascending: false);
-      }
-      
-      if (mounted) setState(() {
-        filings = res ?? [];
-        loading = false;
-      });
-    } catch (e) {
-      debugPrint("Statutory filings error: $e");
-      if (mounted) setState(() => loading = false);
-    }
-  }
+class _StatutoryReturnsTab extends StatelessWidget {
+  const _StatutoryReturnsTab({required this.repo});
+  final ComplianceRepository repo;
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Center(child: CircularProgressIndicator());
-    if (filings.isEmpty) return const Center(child: Text("No filings found"));
-    return ListView.builder(
-      padding: const EdgeInsets.all(20),
-      itemCount: filings.length,
-      itemBuilder: (context, index) {
-        final f = filings[index];
-        final status = (f['status'] ?? 'pending').toString().toLowerCase();
-        Color statusColor = status == 'filed' ? Colors.green : (status == 'overdue' ? Colors.red : Colors.orange);
-
-        return Card(
-          margin: const EdgeInsets.only(bottom: 16),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(f['return_type'] ?? '', style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, fontSize: 14)),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                      child: Text(status.toUpperCase(), style: TextStyle(color: statusColor, fontSize: 9, fontWeight: FontWeight.bold)),
+    return ManagerLoader<List<Map<String, dynamic>>>(
+      load: repo.returns,
+      isEmpty: (r) => r.isEmpty,
+      emptyText: 'No filings found',
+      forbiddenMessage: kComplianceHrOnlyMessage,
+      builder: (context, filings) => ListView.builder(
+        padding: const EdgeInsets.all(20),
+        itemCount: filings.length,
+        itemBuilder: (context, i) {
+          final f = filings[i];
+          final status = (f['status'] ?? 'pending').toString().toLowerCase();
+          final statusColor = status == 'filed'
+              ? Colors.green
+              : (status == 'overdue' ? Colors.red : Colors.orange);
+          final label = _text(f['period_label']).isNotEmpty
+              ? _text(f['period_label'])
+              : [
+                  if (asInt(f['period_month'], 0) > 0)
+                    DateFormat.MMM().format(
+                      DateTime(2000, asInt(f['period_month'])),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Text("Period: ${f['period_month']} ${f['period_year']}", style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                Text("Due Date: ${DateFormat('dd MMM yyyy').format(DateTime.parse(f['due_date']))}", style: const TextStyle(fontSize: 12)),
-                if (f['challan_amount'] != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text("Amount: ₹${f['challan_amount']}", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
-                  ),
-              ],
+                  _text(f['period_year']),
+                ].where((s) => s.isNotEmpty).join(' ');
+          final due = _dateOrEmpty(f['due_date']);
+          return Card(
+            margin: const EdgeInsets.only(bottom: 16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
             ),
-          ),
-        );
-      },
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _text(f['return_type']),
+                        style: GoogleFonts.montserrat(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                      _statusChip(status, statusColor),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (label.isNotEmpty)
+                    Text(
+                      "Period: $label",
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  if (due.isNotEmpty)
+                    Text(
+                      "Due Date: $due",
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  if (asNum(f['challan_amount']) != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        "Amount: ${_money(f['challan_amount'])}",
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -518,78 +733,46 @@ class _StatutoryReturnsTabState extends State<_StatutoryReturnsTab> {
 // -----------------------------------------------------------------------------
 // 3. FACTORIES ACT
 // -----------------------------------------------------------------------------
-class _FactoriesActTab extends StatefulWidget {
-  final Map<String, dynamic> userData;
-  const _FactoriesActTab({required this.userData});
-
-  @override
-  State<_FactoriesActTab> createState() => _FactoriesActTabState();
-}
-
-class _FactoriesActTabState extends State<_FactoriesActTab> {
-  final supabase = Supabase.instance.client;
-  List<dynamic> logs = [];
-  bool loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchLogs();
-  }
-
-  Future<void> _fetchLogs() async {
-    try {
-      final orgId = widget.userData['organization_id'];
-      dynamic res;
-      try {
-        res = await supabase.from('factory_accident_log').select().eq('org_id', orgId).order('accident_datetime', ascending: false);
-      } catch (e) {
-        res = await supabase.from('factory_accident_log').select().eq('organization_id', orgId).order('accident_datetime', ascending: false);
-      }
-      
-      final List<Map<String, dynamic>> rawLogs = List<Map<String, dynamic>>.from(res ?? []);
-
-      if (rawLogs.isNotEmpty) {
-        final empIds = rawLogs.map((i) => i['employee_id']).where((id) => id != null).toSet().toList();
-        if (empIds.isNotEmpty) {
-          final emps = await supabase.from('employee_records').select('id, full_name').inFilter('id', empIds);
-          final empMap = {for (var e in emps) e['id']: e};
-          for (var log in rawLogs) {
-            if (log['employee_id'] != null && empMap.containsKey(log['employee_id'])) {
-              log['employee_records'] = empMap[log['employee_id']];
-            }
-          }
-        }
-      }
-
-      if (mounted) setState(() {
-        logs = rawLogs;
-        loading = false;
-      });
-    } catch (e) {
-      debugPrint("Factories Act robust fetch error: $e");
-      if (mounted) setState(() => loading = false);
-    }
-  }
+class _FactoriesActTab extends StatelessWidget {
+  const _FactoriesActTab({required this.repo});
+  final ComplianceRepository repo;
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Center(child: CircularProgressIndicator());
-    if (logs.isEmpty) return const Center(child: Text("No accident logs recorded"));
-    return ListView.builder(
-      padding: const EdgeInsets.all(20),
-      itemCount: logs.length,
-      itemBuilder: (context, index) {
-        final log = logs[index];
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          child: ListTile(
-            title: Text(log['injury_type'] ?? 'Accident', style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text("Location: ${log['accident_location']} • Reported: ${log['status']}"),
-            trailing: const Icon(Icons.warning_amber_rounded, color: Colors.red),
-          ),
-        );
-      },
+    return ManagerLoader<List<Map<String, dynamic>>>(
+      load: repo.factoryAccidents,
+      isEmpty: (r) => r.isEmpty,
+      emptyText: 'No accident logs recorded',
+      forbiddenMessage: kComplianceHrOnlyMessage,
+      builder: (context, logs) => ListView.builder(
+        padding: const EdgeInsets.all(20),
+        itemCount: logs.length,
+        itemBuilder: (context, i) {
+          final log = logs[i];
+          final parts = [
+            if (_text(log['accident_location']).isNotEmpty)
+              "Location: ${_text(log['accident_location'])}",
+            if (_text(log['status']).isNotEmpty)
+              "Status: ${_text(log['status'])}",
+          ];
+          return Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: ListTile(
+              title: Text(
+                _text(log['injury_type']).isEmpty
+                    ? 'Accident'
+                    : _text(log['injury_type']),
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: parts.isEmpty ? null : Text(parts.join(' • ')),
+              trailing: const Icon(
+                Icons.warning_amber_rounded,
+                color: Colors.red,
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -597,76 +780,48 @@ class _FactoriesActTabState extends State<_FactoriesActTab> {
 // -----------------------------------------------------------------------------
 // 4. SHOPS & ESTABLISHMENTS
 // -----------------------------------------------------------------------------
-class _ShopsEstablishmentTab extends StatefulWidget {
-  final Map<String, dynamic> userData;
-  const _ShopsEstablishmentTab({required this.userData});
-
-  @override
-  State<_ShopsEstablishmentTab> createState() => _ShopsEstablishmentTabState();
-}
-
-class _ShopsEstablishmentTabState extends State<_ShopsEstablishmentTab> {
-  final supabase = Supabase.instance.client;
-  List<dynamic> certs = [];
-  bool loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchCerts();
-  }
-
-  Future<void> _fetchCerts() async {
-    try {
-      final orgId = widget.userData['organization_id'];
-      dynamic res;
-      try {
-        res = await supabase
-            .from('shops_establishment_certs')
-            .select()
-            .eq('org_id', orgId);
-      } catch (e) {
-        res = await supabase
-            .from('shops_establishment_certs')
-            .select()
-            .eq('organization_id', orgId);
-      }
-      
-      if (mounted) setState(() {
-        certs = res ?? [];
-        loading = false;
-      });
-    } catch (e) {
-      debugPrint("Shops Certs error: $e");
-      if (mounted) setState(() => loading = false);
-    }
-  }
+class _ShopsTab extends StatelessWidget {
+  const _ShopsTab({required this.repo});
+  final ComplianceRepository repo;
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Center(child: CircularProgressIndicator());
-    if (certs.isEmpty) return const Center(child: Text("No certificates found"));
-    return ListView.builder(
-      padding: const EdgeInsets.all(20),
-      itemCount: certs.length,
-      itemBuilder: (context, index) {
-        final c = certs[index];
-        final validUntil = c['valid_until'];
-        DateTime? expiry;
-        if (validUntil != null) expiry = DateTime.tryParse(validUntil.toString());
-        
-        final isExpired = expiry != null && expiry.isBefore(DateTime.now());
-        
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          child: ListTile(
-            leading: const Icon(Icons.verified, color: Colors.blue),
-            title: Text(c['establishment_name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text(expiry != null ? "Valid until: ${DateFormat('dd MMM yyyy').format(expiry)}" : "Validity not set"),
-            trailing: Icon(Icons.circle, size: 12, color: isExpired ? Colors.red : Colors.green),
-          ),
-        );
-      },
+    return ManagerLoader<List<Map<String, dynamic>>>(
+      load: repo.shopsCerts,
+      isEmpty: (r) => r.isEmpty,
+      emptyText: 'No certificates found',
+      forbiddenMessage: kComplianceHrOnlyMessage,
+      builder: (context, certs) => ListView.builder(
+        padding: const EdgeInsets.all(20),
+        itemCount: certs.length,
+        itemBuilder: (context, i) {
+          final c = certs[i];
+          final expiry = asDate(c['valid_until']);
+          final isExpired = expiry != null && expiry.isBefore(DateTime.now());
+          return Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: ListTile(
+              leading: const Icon(Icons.verified, color: Colors.blue),
+              title: Text(
+                _text(c['establishment_name']),
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: Text(
+                expiry != null
+                    ? "Valid until: ${DateFormat('dd MMM yyyy').format(expiry)}"
+                    : "Validity not set",
+              ),
+              trailing: expiry == null
+                  ? null
+                  : Icon(
+                      Icons.circle,
+                      size: 12,
+                      color: isExpired ? Colors.red : Colors.green,
+                    ),
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -674,106 +829,79 @@ class _ShopsEstablishmentTabState extends State<_ShopsEstablishmentTab> {
 // -----------------------------------------------------------------------------
 // 5. STATUTORY BONUS
 // -----------------------------------------------------------------------------
-class _StatutoryBonusTab extends StatefulWidget {
-  final Map<String, dynamic> userData;
-  const _StatutoryBonusTab({required this.userData});
+class _BonusTab extends StatelessWidget {
+  const _BonusTab({required this.repo});
+  final ComplianceRepository repo;
 
-  @override
-  State<_StatutoryBonusTab> createState() => _StatutoryBonusTabState();
-}
-
-class _StatutoryBonusTabState extends State<_StatutoryBonusTab> {
-  final supabase = Supabase.instance.client;
-  List<dynamic> bonusRuns = [];
-  bool loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchBonusRuns();
-  }
-  Future<void> _fetchBonusRuns() async {
-    try {
-      final orgId = widget.userData['organization_id'];
-      dynamic res;
-      try {
-        res = await supabase
-            .from('bonus_runs')
-            .select()
-            .eq('organization_id', orgId)
-            .order('accounting_year', ascending: false);
-      } catch (e) {
-        res = await supabase
-            .from('bonus_runs')
-            .select()
-            .eq('org_id', orgId)
-            .order('accounting_year', ascending: false);
-      }
-      
-      if (mounted) setState(() {
-        bonusRuns = res ?? [];
-        loading = false;
-      });
-    } catch (e) {
-      debugPrint("Bonus runs error: $e");
-      if (mounted) setState(() => loading = false);
-    }
-  }
+  Widget _row(String label, String val) => Padding(
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        Text(
+          val,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Center(child: CircularProgressIndicator());
-    if (bonusRuns.isEmpty) return const Center(child: Text("No bonus runs found"));
-    return ListView.builder(
-      padding: const EdgeInsets.all(20),
-      itemCount: bonusRuns.length,
-      itemBuilder: (context, index) {
-        final run = bonusRuns[index];
-        return Card(
-          margin: const EdgeInsets.only(bottom: 16),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text("Bonus Year: ${run['accounting_year']}", style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, fontSize: 15)),
-                    _statusChip(run['status']),
-                  ],
-                ),
-                const Divider(height: 24),
-                _row("Eligible Employees", run['total_eligible_employees']?.toString() ?? '0'),
-                _row("Total Payout", "₹${NumberFormat('#,##,###').format(run['total_payout_amount'] ?? 0)}"),
-                _row("Applied %", "${run['bonus_pct_applied']}%"),
-              ],
+    return ManagerLoader<List<Map<String, dynamic>>>(
+      load: repo.bonusRuns,
+      isEmpty: (r) => r.isEmpty,
+      emptyText: 'No bonus runs found',
+      forbiddenMessage: kComplianceHrOnlyMessage,
+      builder: (context, runs) => ListView.builder(
+        padding: const EdgeInsets.all(20),
+        itemCount: runs.length,
+        itemBuilder: (context, i) {
+          final run = runs[i];
+          final status = _text(run['status']).isEmpty
+              ? 'draft'
+              : _text(run['status']);
+          final pct = asNum(run['bonus_pct_applied']);
+          final eligible = asNum(run['total_eligible_employees']);
+          return Card(
+            margin: const EdgeInsets.only(bottom: 16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
             ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _statusChip(String? status) {
-    Color color = status == 'posted' ? Colors.green : Colors.orange;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-      child: Text((status ?? 'draft').toUpperCase(), style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.bold)),
-    );
-  }
-
-  Widget _row(String label, String val) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-          Text(val, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-        ],
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        "Bonus Year: ${_text(run['accounting_year'])}",
+                        style: GoogleFonts.montserrat(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                      _statusChip(
+                        status,
+                        status == 'posted' ? Colors.green : Colors.orange,
+                      ),
+                    ],
+                  ),
+                  const Divider(height: 24),
+                  _row(
+                    "Eligible Employees",
+                    eligible == null ? '-' : eligible.toInt().toString(),
+                  ),
+                  _row("Total Payout", _money(run['total_payout_amount'])),
+                  _row("Applied %", pct == null ? '-' : "$pct%"),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -783,59 +911,22 @@ class _StatutoryBonusTabState extends State<_StatutoryBonusTab> {
 // 6. GRATUITY
 // -----------------------------------------------------------------------------
 class _GratuityTab extends StatefulWidget {
-  final Map<String, dynamic> userData;
-  const _GratuityTab({required this.userData});
+  const _GratuityTab({required this.repo, required this.names});
+  final ComplianceRepository repo;
+  final Future<Map<String, String>> Function() names;
 
   @override
   State<_GratuityTab> createState() => _GratuityTabState();
 }
 
-class _GratuityTabState extends State<_GratuityTab> with SingleTickerProviderStateMixin {
-  final supabase = Supabase.instance.client;
-  late TabController _subTabController;
-  List<dynamic> provisions = [];
-  bool loading = true;
+class _GratuityTabState extends State<_GratuityTab>
+    with SingleTickerProviderStateMixin {
+  late final TabController _sub = TabController(length: 2, vsync: this);
 
   @override
-  void initState() {
-    super.initState();
-    _subTabController = TabController(length: 2, vsync: this);
-    _fetchProvisions();
-  }
-
-  Future<void> _fetchProvisions() async {
-    try {
-      final orgId = widget.userData['organization_id'];
-      dynamic res;
-      try {
-        res = await supabase.from('gratuity_provisions').select().eq('organization_id', orgId).order('period_month', ascending: false);
-      } catch (e) {
-        res = await supabase.from('gratuity_provisions').select().eq('org_id', orgId).order('period_month', ascending: false);
-      }
-      
-      final List<Map<String, dynamic>> rawProvisions = List<Map<String, dynamic>>.from(res ?? []);
-
-      if (rawProvisions.isNotEmpty) {
-        final empIds = rawProvisions.map((i) => i['employee_id']).where((id) => id != null).toSet().toList();
-        if (empIds.isNotEmpty) {
-          final emps = await supabase.from('employee_records').select('id, full_name, employee_id').inFilter('id', empIds);
-          final empMap = {for (var e in emps) e['id']: e};
-          for (var p in rawProvisions) {
-            if (p['employee_id'] != null && empMap.containsKey(p['employee_id'])) {
-              p['employee_records'] = empMap[p['employee_id']];
-            }
-          }
-        }
-      }
-
-      if (mounted) setState(() {
-        provisions = rawProvisions;
-        loading = false;
-      });
-    } catch (e) {
-      debugPrint("Gratuity robust fetch error: $e");
-      if (mounted) setState(() => loading = false);
-    }
+  void dispose() {
+    _sub.dispose();
+    super.dispose();
   }
 
   @override
@@ -843,151 +934,64 @@ class _GratuityTabState extends State<_GratuityTab> with SingleTickerProviderSta
     return Column(
       children: [
         TabBar(
-          controller: _subTabController,
+          controller: _sub,
           labelColor: const Color(0xFF1E90FF),
-          tabs: const [Tab(text: "Provisions Ledger"), Tab(text: "Payouts")],
+          tabs: const [
+            Tab(text: "Provisions Ledger"),
+            Tab(text: "Payouts"),
+          ],
         ),
         Expanded(
-          child: loading 
-              ? const Center(child: CircularProgressIndicator())
-              : provisions.isEmpty 
-                  ? const Center(child: Text("No provisions found"))
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(20),
-                      itemCount: provisions.length,
-                      itemBuilder: (context, index) {
-                        final p = provisions[index];
-                        final emp = p['employee_records'];
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          child: ListTile(
-                            title: Text(emp?['full_name'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                            subtitle: Text("Eligible Years: ${p['eligible_service_years']}"),
-                            trailing: Text("₹${NumberFormat('#,##,###').format(p['provision_amount'] ?? 0)}", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+          child: TabBarView(
+            controller: _sub,
+            children: [
+              ManagerLoader<_Named>(
+                load: () async {
+                  final rows = await widget.repo.gratuityProvisions();
+                  final names = rows.isEmpty
+                      ? <String, String>{}
+                      : await widget.names();
+                  return _Named(rows, names);
+                },
+                isEmpty: (d) => d.rows.isEmpty,
+                emptyText: 'No provisions found',
+                forbiddenMessage: kComplianceHrOnlyMessage,
+                builder: (context, d) => ListView.builder(
+                  padding: const EdgeInsets.all(20),
+                  itemCount: d.rows.length,
+                  itemBuilder: (context, i) {
+                    final p = d.rows[i];
+                    final years = asNum(p['eligible_service_years']);
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: ListTile(
+                        title: Text(
+                          d.nameOf(p),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
                           ),
-                        );
-                      },
-                    ),
+                        ),
+                        subtitle: Text(
+                          "Eligible Years: ${years == null ? '-' : years.toString()}",
+                        ),
+                        trailing: Text(
+                          _money(p['provision_amount']),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const ManagerInfoState(kComplianceUnavailableMessage),
+            ],
+          ),
         ),
       ],
     );
   }
-}
-
-// -----------------------------------------------------------------------------
-// QUICK LINK VIEWS
-// -----------------------------------------------------------------------------
-
-class _PoshComplianceView extends StatelessWidget {
-  final Map<String, dynamic> userData;
-  const _PoshComplianceView({required this.userData});
-
-  @override
-  Widget build(BuildContext context) {
-    return _simpleListView('posh_cases', 'case_number', 'status', userData['organization_id']);
-  }
-}
-
-class _MaternityComplianceView extends StatelessWidget {
-  final Map<String, dynamic> userData;
-  const _MaternityComplianceView({required this.userData});
-
-  @override
-  Widget build(BuildContext context) {
-    return _simpleListView('maternity_cases', 'leave_type', 'expected_delivery_date', userData['organization_id'], joinTable: 'employee_records');
-  }
-}
-
-class _CLRAComplianceView extends StatelessWidget {
-  final Map<String, dynamic> userData;
-  const _CLRAComplianceView({required this.userData});
-
-  @override
-  Widget build(BuildContext context) {
-    return _simpleListView('contractors', 'name', 'license_number', userData['organization_id']);
-  }
-}
-
-class _PayEquityView extends StatelessWidget {
-  final Map<String, dynamic> userData;
-  const _PayEquityView({required this.userData});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(child: Text("Pay Equity Analysis - Dashboard coming soon"));
-  }
-}
-
-class _ApprenticesView extends StatelessWidget {
-  final Map<String, dynamic> userData;
-  const _ApprenticesView({required this.userData});
-
-  @override
-  Widget build(BuildContext context) {
-    return _simpleListView('apprentice_records', 'apprentice_name', 'trade', userData['organization_id']);
-  }
-}
-
-class _AuditorPackView extends StatelessWidget {
-  final Map<String, dynamic> userData;
-  const _AuditorPackView({required this.userData});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(child: Text("Auditor Export Pack - Request a manifest from web console"));
-  }
-}
-
-Widget _simpleListView(String table, String titleCol, String subTitleCol, String orgId, {String? joinTable}) {
-  final supabase = Supabase.instance.client;
-  String select = '*';
-  if (joinTable != null) select = '*, $joinTable(full_name)';
-
-  return FutureBuilder(
-    future: () async {
-      try {
-        // Try all schema variations
-        try {
-          return await supabase.from(table).select(select).eq('org_id', orgId);
-        } catch (_) {
-          return await supabase.from(table).select(select).eq('organization_id', orgId);
-        }
-      } catch (e) {
-        // Final fallback without join if join failed
-        if (select != '*') {
-           try {
-            return await supabase.from(table).select('*').eq('org_id', orgId);
-          } catch (_) {
-            return await supabase.from(table).select('*').eq('organization_id', orgId);
-          }
-        }
-        rethrow;
-      }
-    }(),
-    builder: (context, snapshot) {
-      if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-      if (snapshot.hasError) return Center(child: Text("Data fetch error: ${snapshot.error}", style: const TextStyle(fontSize: 10, color: Colors.red)));
-      
-      final List data = (snapshot.data as List?) ?? [];
-      if (data.isEmpty) return const Center(child: Text("No records found"));
-
-      return ListView.builder(
-        padding: const EdgeInsets.all(20),
-        itemCount: data.length,
-        itemBuilder: (ctx, i) {
-          final item = data[i];
-          String title = item[titleCol]?.toString() ?? '';
-          if (joinTable != null && item[joinTable] != null) {
-            title = "${item[joinTable]['full_name']} - $title";
-          }
-          return Card(
-            child: ListTile(
-              title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text(item[subTitleCol]?.toString() ?? ''),
-            ),
-          );
-        },
-      );
-    },
-  );
 }

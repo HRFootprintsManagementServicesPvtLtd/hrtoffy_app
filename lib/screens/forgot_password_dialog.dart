@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
-final supabase = Supabase.instance.client;
+import '../core/api/api_client.dart';
+import '../core/auth/auth_service.dart';
+import '../core/auth/password_reset_rules.dart';
 
 class ForgotPasswordDialog extends StatefulWidget {
-  const ForgotPasswordDialog({Key? key}) : super(key: key);
+  /// Overridable for tests; defaults to the app's session service.
+  final AuthService? authService;
+
+  const ForgotPasswordDialog({Key? key, this.authService}) : super(key: key);
 
   @override
   State<ForgotPasswordDialog> createState() => _ForgotPasswordDialogState();
@@ -17,9 +20,9 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
 
   Future<void> _sendOtp() async {
     final email = _emailController.text.trim();
-
-    if (email.isEmpty) {
-      setState(() => _error = "Please enter your email");
+    final invalid = PasswordResetRules.validateEmail(email);
+    if (invalid != null) {
+      setState(() => _error = invalid);
       return;
     }
 
@@ -29,51 +32,41 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
     });
 
     try {
-      debugPrint("OTP: Checking if email $email exists in employee_records...");
-      final empCheck = await supabase
-          .from('employee_records')
-          .select('id')
-          .eq('email', email)
-          .maybeSingle();
-
-      if (empCheck == null) {
-        setState(() => _error = "This email is not registered in our system.");
-        return;
-      }
-
-      debugPrint("OTP: Invoking request-password-otp for $email");
-      final response = await supabase.functions.invoke(
-        'request-password-otp',
-        body: {'email': email},
-      );
-
-      debugPrint("OTP: Status => ${response.status}");
-      debugPrint("OTP: Data => ${response.data}");
-
-      if (response.status != 200 && response.status != 204) {
-        final errorMsg = response.data is Map ? (response.data['error'] ?? response.data['message']) : "Server error";
-        throw Exception(errorMsg.toString());
-      }
-
-      final data = response.data;
-      if (data is Map && data['success'] == false) {
-        throw Exception(data['error'] ?? data['message'] ?? "Failed to send OTP");
-      }
+      // The server answers the same way whether or not the address is registered (and so do we):
+      // no employee lookup here, and no hint about which emails exist.
+      await (widget.authService ?? AuthService.instance)
+          .requestPasswordResetOtp(email);
 
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("OTP sent successfully. Please check your email."), backgroundColor: Colors.green),
+        const SnackBar(
+          content: Text(
+            "If this email is registered, an OTP has been sent. Please check your email.",
+          ),
+          backgroundColor: Colors.green,
+        ),
       );
 
       // ✅ return email to LoginScreen
       Navigator.pop(context, email);
     } catch (e) {
-      debugPrint("OTP: Exception => $e");
-      setState(() => _error = e.toString().replaceAll("Exception:", "").trim());
+      debugPrint("OTP: request failed");
+      if (mounted) setState(() => _error = _requestErrorText(e));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// A safe message: never the server's own text.
+  String _requestErrorText(Object e) {
+    if (e is ApiException) {
+      if (e.isNetworkError)
+        return "No connection. Please check your internet and try again.";
+      if (e.statusCode == 429)
+        return "Too many attempts. Please wait a minute and try again.";
+      if (e.statusCode == 400) return "Please enter a valid email address.";
+    }
+    return "Could not request an OTP. Please try again.";
   }
 
   @override
@@ -126,21 +119,21 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
                 ),
                 child: _loading
                     ? const SizedBox(
-                  height: 22,
-                  width: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                )
+                        height: 22,
+                        width: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
                     : const Text(
-                  "Send OTP",
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
+                        "Send OTP",
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
               ),
             ),
           ],

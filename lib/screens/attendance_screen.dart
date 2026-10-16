@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import '../widgets/refreshable_screen.dart';
 import '../widgets/skeleton_layouts.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -17,17 +16,25 @@ import '../widgets/employee_ui.dart';
 import '../models/work_site.dart';
 import 'live_tracking_screen.dart';
 import '../services/attendance_service.dart';
+import '../core/api/api_client.dart';
+import '../core/auth/auth_service.dart';
+import '../repositories/attendance_repository.dart';
+import '../repositories/employee_repository.dart';
 
 class TimeAttendanceScreen extends StatefulWidget {
   final String userEmail;
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
 
+  /// Tests only: where the signed-in employee is loaded from (defaults to the session's).
+  final EmployeeRepository? employeeRepository;
+
   const TimeAttendanceScreen({
     Key? key,
     required this.userEmail,
     required this.userData,
     required this.fetchHrmsContext,
+    this.employeeRepository,
   }) : super(key: key);
 
   @override
@@ -39,7 +46,6 @@ class _TimeAttendanceScreenState extends State<TimeAttendanceScreen>
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 2;
   String? companyLogoUrl;
-  final SupabaseClient supabase = Supabase.instance.client;
   TabController? _tabController;
   Map<String, dynamic>? employee;
 
@@ -54,10 +60,11 @@ class _TimeAttendanceScreenState extends State<TimeAttendanceScreen>
   @override
   Future<void> loadData() async {
     try {
-      final email = widget.userEmail;
-      final emp = await supabase.from('employee_records').select().eq('email', email.toLowerCase()).maybeSingle();
+      // The signed-in employee, from the HR Toffy API (the session decides who that is).
+      final emp = await (widget.employeeRepository ?? EmployeeRepository()).getMe();
+      if (!mounted) return;
       setState(() {
-        employee = emp != null ? Map<String, dynamic>.from(emp) : null;
+        employee = emp.isNotEmpty ? emp : null;
       });
     } catch (e) {
       debugPrint('loadData error: $e');
@@ -190,7 +197,6 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
   bool get isBiometricOnly => attendanceRecordingMethod == 'biometric';
   bool get isInSystemAllowed => attendanceRecordingMethod == 'in_system' || attendanceRecordingMethod == 'both';
 
-  final supabase = Supabase.instance.client;
   bool loading = false;
   bool hasPunchedIn = false;
   Map<String, dynamic>? todayAttendance;
@@ -245,9 +251,14 @@ class _AttendanceTabState extends State<AttendanceTab> with TickerProviderStateM
     try {
       final orgId = widget.employee['organization_id'];
       if (orgId == null) return;
-      final org = await supabase.from('organizations').select('attendance_recording_method').eq('id', orgId).maybeSingle();
-      setState(() => attendanceRecordingMethod = org?['attendance_recording_method'] ?? 'in_system');
-    } catch (e) { debugPrint('loadAttendanceRecordingMethod error: $e'); }
+      final method = await AttendanceService.getAttendanceRecordingMethod();
+      if (!mounted) return;
+      setState(() => attendanceRecordingMethod = method);
+    } catch (e) {
+      // The server still refuses a punch that is not allowed; do not hide the punch controls because this read failed.
+      debugPrint('loadAttendanceRecordingMethod error: ${friendlyAttendanceError(e)}');
+      if (mounted) setState(() => attendanceRecordingMethod = 'in_system');
+    }
   }
 
   Future<void> _loadGeoFencePolicy() async {
@@ -507,7 +518,6 @@ class MyHistoryTab extends StatefulWidget {
 }
 
 class _MyHistoryTabState extends State<MyHistoryTab> {
-  final supabase = Supabase.instance.client;
   DateTime selectedDate = DateTime.now();
   List<Map<String, dynamic>> logs = [];
   bool loading = false;
@@ -561,7 +571,6 @@ class RegularizationTab extends StatefulWidget {
 }
 
 class _RegularizationTabState extends State<RegularizationTab> {
-  final supabase = Supabase.instance.client;
   DateTime? date;
   final TextEditingController inCtrl = TextEditingController(), outCtrl = TextEditingController(), reasonCtrl = TextEditingController();
   bool loading = false;
@@ -578,15 +587,13 @@ class _RegularizationTabState extends State<RegularizationTab> {
     if (date == null || inCtrl.text.isEmpty || reasonCtrl.text.isEmpty) { _error("Please fill all required fields"); return; }
     setState(() => loading = true);
     try {
-      final user = supabase.auth.currentUser;
-      final emp = await supabase.from("employee_records").select("id, organization_id, manager_id").eq("email", user?.email ?? "").maybeSingle();
-      if (emp == null) throw Exception("Employee not found");
       final dateStr = DateFormat("yyyy-MM-dd").format(date!);
-      await supabase.from("attendance_regularization_requests").insert({"employee_id": emp["id"], "organization_id": emp["organization_id"], "manager_id": emp["manager_id"], "date": dateStr, "requested_punch_in": _combine(dateStr, inCtrl.text), "requested_punch_out": outCtrl.text.isNotEmpty ? _combine(dateStr, outCtrl.text) : null, "reason": reasonCtrl.text, "status": "pending", "created_at": DateTime.now().toUtc().toIso8601String()});
+      // The server decides who the employee is and who approves; neither id is sent.
+      await AttendanceService.submitRegularization(date: dateStr, requestedPunchIn: _combine(dateStr, inCtrl.text), requestedPunchOut: outCtrl.text.isNotEmpty ? _combine(dateStr, outCtrl.text) : null, reason: reasonCtrl.text);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: const Text("✅ Regularization request submitted"), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating));
       setState(() { date = null; inCtrl.clear(); outCtrl.clear(); reasonCtrl.clear(); });
-    } catch (e) { _error(e.toString()); }
-    finally { setState(() => loading = false); }
+    } catch (e) { _error((e is ApiException || e is AuthFlowException) ? friendlyAttendanceError(e) : e.toString()); }
+    finally { if (mounted) setState(() => loading = false); }
   }
 
   String _combine(String d, String t) {

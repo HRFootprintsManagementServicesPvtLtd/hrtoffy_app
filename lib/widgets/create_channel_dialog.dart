@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../repositories/chat_repository.dart';
 import 'employee_ui.dart';
 
 class CreateChannelDialog extends StatefulWidget {
   final Function() onCreated;
 
+  /// Overridable for tests; defaults to the signed-in session.
+  final ChatRepository? repository;
+
   const CreateChannelDialog({
     super.key,
     required this.onCreated,
+    this.repository,
   });
 
   @override
@@ -16,7 +20,7 @@ class CreateChannelDialog extends StatefulWidget {
 }
 
 class _CreateChannelDialogState extends State<CreateChannelDialog> {
-  final supabase = Supabase.instance.client;
+  late final ChatRepository _chat = widget.repository ?? ChatRepository();
   final TextEditingController nameController = TextEditingController();
   final TextEditingController descriptionController = TextEditingController();
   final TextEditingController searchController = TextEditingController();
@@ -25,8 +29,6 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
   List<Map<String, dynamic>> filteredEmployees = [];
   List<Map<String, dynamic>> selectedEmployees = [];
   bool loading = true;
-  String? organizationId;
-  String? currentUserId;
 
   @override
   void initState() {
@@ -36,69 +38,13 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
 
   Future<void> _initialize() async {
     try {
-      final authUser = supabase.auth.currentUser;
-      debugPrint("[Messages] Current auth.uid(): ${authUser?.id}");
-      if (authUser == null) throw Exception("User not authenticated");
-      currentUserId = authUser.id;
-
-      debugPrint("[Messages] Resolving employee record for user_id: $currentUserId");
-      // Use exact resolution logic as Leave/Travel
-      final currentEmp = await supabase
-          .from('employee_records')
-          .select('id, organization_id, status')
-          .eq('user_id', currentUserId!)
-          .maybeSingle();
-
-      debugPrint("[Messages] Resolved employee record: $currentEmp");
-      if (currentEmp == null) {
-        debugPrint("[Messages] ERROR: Active employee record not found for user_id: $currentUserId");
-        throw Exception("Active employee record not found");
-      }
-      
-      final empId = currentEmp['id'];
-      organizationId = currentEmp['organization_id']?.toString();
-      
-      debugPrint("[Messages] Resolved employee id: $empId");
-      debugPrint("[Messages] Resolved organization id: $organizationId");
-
-      if (organizationId != null) {
-        await _loadOrganizationMembers();
-      } else {
-        debugPrint("[Messages] ERROR: Organization ID is null for employee: $empId");
-      }
+      // The API decides who may be listed (the organization's chat scope); the caller is excluded.
+      allEmployees = await _chat.directory();
+      filteredEmployees = allEmployees;
     } catch (e) {
-      _handleError("Initialization Error", e);
+      _handleError("Could not load employees", e);
     } finally {
       if (mounted) setState(() => loading = false);
-    }
-  }
-
-  Future<void> _loadOrganizationMembers() async {
-    try {
-      debugPrint("[Messages] Loading organization members. Query: organization_id=$organizationId, status=active, exclude current user");
-      // Fetch ONLY permitted columns
-      final result = await supabase.rpc(
-        'get_chat_directory',
-        params: {
-          'p_org_id': organizationId!,
-        },
-      );
-      debugPrint("=== EMPLOYEE RESULT START ===");
-      debugPrint(result.toString());
-      debugPrint("Employee Count: ${result.length}");
-      debugPrint("=== EMPLOYEE RESULT END ===");
-      allEmployees = List<Map<String, dynamic>>.from(result);
-      debugPrint("[Messages] Number of employees returned: ${allEmployees.length}");
-      debugPrint("[Messages] Employee IDs: ${allEmployees.map((e) => e['id']).toList()}");
-      debugPrint("[Messages] Employee names: ${allEmployees.map((e) => e['full_name']).toList()}");
-      
-      filteredEmployees = allEmployees;
-    } on PostgrestException catch (e) {
-      debugPrint("[Messages] Load Members - PostgrestException:\nMessage: ${e.message}\nDetails: ${e.details}\nHint: ${e.hint}\nCode: ${e.code}");
-      rethrow;
-    } catch (e) {
-      debugPrint("[Messages] Load Members Error: $e");
-      rethrow;
     }
   }
 
@@ -124,14 +70,20 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
   }
 
   void _handleError(String title, dynamic e) {
-    if (e is PostgrestException) {
-      debugPrint("[Messages] $title - PostgrestException:\nMessage: ${e.message}\nDetails: ${e.details}\nHint: ${e.hint}\nCode: ${e.code}");
-    } else {
-      debugPrint("[Messages] $title: $e");
-    }
+    debugPrint("[Messages] $title");
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("$title: ${e.toString()}"), backgroundColor: Colors.red),
+        SnackBar(
+          content: Text(
+            chatErrorText(
+              e,
+              "$title. Please try again.",
+              // Only the create/start calls: a 404 there is the server refusing to find the colleague, not a missing screen.
+              notFound: title.startsWith("Could not load") ? kChatDirectoryNotFoundMessage : kChatStartNotFoundMessage,
+            ),
+          ),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
@@ -139,61 +91,54 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
   Future<void> _createChannel() async {
     final name = nameController.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Channel name is required")));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("Channel name is required")));
       return;
     }
     if (selectedEmployees.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Add at least one member")));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("Add at least one member")));
       return;
     }
 
     setState(() => loading = true);
     try {
-      debugPrint("[Messages] Creating channel: $name");
-      debugPrint("========== CREATE GROUP ==========");
-      debugPrint("organizationId = $organizationId");
-      debugPrint("currentUserId = $currentUserId");
-      debugPrint("name = ${nameController.text}");
-      debugPrint("==================================");
+      // The API takes each member as {employeeId, userId}; people without a user id cannot be added.
+      final members = <({String employeeId, String userId})>[
+        for (final emp in selectedEmployees)
+          if (emp['user_id'] != null && emp['id'] != null)
+            (
+              employeeId: emp['id'].toString(),
+              userId: emp['user_id'].toString(),
+            ),
+      ];
+      if (members.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Add at least one member")),
+        );
+        return;
+      }
 
-      // Build arrays required by the RPC
-      final memberUserIds = selectedEmployees
-          .map((e) => e['user_id'])
-          .where((e) => e != null)
-          .toList();
-
-      final memberEmployeeIds = selectedEmployees
-          .map((e) => e['id'])
-          .where((e) => e != null)
-          .toList();
-
-      debugPrint("RPC USER IDS: $memberUserIds");
-      debugPrint("RPC EMP IDS : $memberEmployeeIds");
-
-      final channelId = await supabase.rpc(
-        'create_chat_channel',
-        params: {
-          'p_org_id': organizationId,
-          'p_channel_type': 'group',
-          'p_name': name,
-          'p_description': descriptionController.text.trim(),
-          'p_member_user_ids': memberUserIds,
-          'p_member_employee_ids': memberEmployeeIds,
-        },
+      await _chat.createGroup(
+        name: name,
+        description: descriptionController.text.trim(),
+        members: members,
       );
 
-      debugPrint("Created Channel ID => $channelId");
-      
-      debugPrint("[Messages] Channel and members successfully created");
       if (mounted) {
         Navigator.pop(context);
         widget.onCreated();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Group channel created successfully"), backgroundColor: Colors.green),
+          const SnackBar(
+            content: Text("Group channel created successfully"),
+            backgroundColor: Colors.green,
+          ),
         );
       }
     } catch (e) {
-      _handleError("Create Channel Error", e);
+      _handleError("Could not create the channel", e);
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -238,24 +183,39 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text("Create Group Channel", style: EmployeeUi.header(20)),
-                      IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+                      Text(
+                        "Create Group Channel",
+                        style: EmployeeUi.header(20),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 20),
                   TextField(
                     controller: nameController,
-                    decoration: _inputDecoration(hint: "Channel name (required)"),
+                    decoration: _inputDecoration(
+                      hint: "Channel name (required)",
+                    ),
                   ),
                   const SizedBox(height: 12),
                   TextField(
                     controller: descriptionController,
                     maxLines: 2,
-                    decoration: _inputDecoration(hint: "Description (optional)"),
+                    decoration: _inputDecoration(
+                      hint: "Description (optional)",
+                    ),
                   ),
                   const SizedBox(height: 20),
-                  Text("Add Members (${selectedEmployees.length})",
-                      style: GoogleFonts.montserrat(fontWeight: FontWeight.bold, fontSize: 14)),
+                  Text(
+                    "Add Members (${selectedEmployees.length})",
+                    style: GoogleFonts.montserrat(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   if (selectedEmployees.isNotEmpty)
                     SizedBox(
@@ -268,9 +228,14 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
                           return Padding(
                             padding: const EdgeInsets.only(right: 8),
                             child: Chip(
-                              label: Text(emp['full_name'] ?? '', style: const TextStyle(fontSize: 12)),
+                              label: Text(
+                                emp['full_name'] ?? '',
+                                style: const TextStyle(fontSize: 12),
+                              ),
                               onDeleted: () {
-                                setState(() => selectedEmployees.removeAt(index));
+                                setState(
+                                  () => selectedEmployees.removeAt(index),
+                                );
                               },
                               deleteIcon: const Icon(Icons.close, size: 14),
                               backgroundColor: const Color(0xFFD7E8FF),
@@ -283,39 +248,67 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
                   TextField(
                     controller: searchController,
                     onChanged: _filterEmployees,
-                    decoration: _inputDecoration(hint: "Search employees...").copyWith(
-                      prefixIcon: const Icon(Icons.search, size: 20),
-                    ),
+                    decoration: _inputDecoration(
+                      hint: "Search employees...",
+                    ).copyWith(prefixIcon: const Icon(Icons.search, size: 20)),
                   ),
                   const SizedBox(height: 12),
                   Expanded(
                     child: filteredEmployees.isEmpty
-                        ? Center(child: Text("No employees found", style: GoogleFonts.montserrat(color: Colors.grey)))
+                        ? Center(
+                            child: Text(
+                              "No employees found",
+                              style: GoogleFonts.montserrat(color: Colors.grey),
+                            ),
+                          )
                         : ListView.builder(
                             itemCount: filteredEmployees.length,
                             itemBuilder: (context, index) {
                               final emp = filteredEmployees[index];
-                              final isSelected = selectedEmployees.any((s) => s['user_id'] == emp['user_id']);
+                              final isSelected = selectedEmployees.any(
+                                (s) => s['user_id'] == emp['user_id'],
+                              );
 
                               return CheckboxListTile(
                                 value: isSelected,
                                 activeColor: EmployeeUi.primary,
-                                checkboxShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                checkboxShape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
                                 contentPadding: EdgeInsets.zero,
-                                title: Text(emp['full_name'] ?? '', style: GoogleFonts.montserrat(fontSize: 14, fontWeight: FontWeight.w600)),
-                                subtitle: Text("${emp['designation'] ?? ''} • ${emp['department'] ?? ''}",
-                                    style: GoogleFonts.montserrat(fontSize: 11, color: Colors.grey)),
+                                title: Text(
+                                  emp['full_name'] ?? '',
+                                  style: GoogleFonts.montserrat(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  "${emp['designation'] ?? ''} • ${emp['department'] ?? ''}",
+                                  style: GoogleFonts.montserrat(
+                                    fontSize: 11,
+                                    color: Colors.grey,
+                                  ),
+                                ),
                                 secondary: CircleAvatar(
                                   radius: 18,
                                   backgroundImage: null,
-                                  child: emp['avatar_url'] == null ? Text(emp['full_name']?[0] ?? '?', style: const TextStyle(fontSize: 12)) : null,
+                                  child: emp['avatar_url'] == null
+                                      ? Text(
+                                          emp['full_name']?[0] ?? '?',
+                                          style: const TextStyle(fontSize: 12),
+                                        )
+                                      : null,
                                 ),
                                 onChanged: (val) {
                                   setState(() {
                                     if (val == true) {
-                                      if (!isSelected) selectedEmployees.add(emp);
+                                      if (!isSelected)
+                                        selectedEmployees.add(emp);
                                     } else {
-                                      selectedEmployees.removeWhere((s) => s['user_id'] == emp['user_id']);
+                                      selectedEmployees.removeWhere(
+                                        (s) => s['user_id'] == emp['user_id'],
+                                      );
                                     }
                                   });
                                 },
@@ -332,11 +325,23 @@ class _CreateChannelDialogState extends State<CreateChannelDialog> {
                         backgroundColor: EmployeeUi.primary,
                         foregroundColor: Colors.white,
                         minimumSize: const Size(0, 50),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
                       child: loading
-                          ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                          : const Text("Create Channel", style: TextStyle(fontWeight: FontWeight.bold)),
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Text(
+                              "Create Channel",
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
                     ),
                   ),
                 ],

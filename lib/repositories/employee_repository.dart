@@ -23,16 +23,38 @@ class EmployeeRepository extends BaseRepository {
     return normalize(data);
   }
 
-  /// `PATCH /organizations/:orgId/employees/me` - personal, contact, bank and statutory fields.
+  /// The only employee columns an employee may change themselves: the website's `ess_update_my_profile` whitelist
+  /// (`ESS_EDITABLE_FIELDS` in `EditMyDetailsForm`). Bank, PAN, Aadhaar, UAN, work information and `email` are managed
+  /// by HR and are never sent from the app.
+  static const Set<String> editableProfileFields = {
+    'full_name',
+    'date_of_birth',
+    'gender',
+    'blood_group',
+    'marital_status',
+    'nationality',
+    'phone',
+    'mobile_number',
+    'personal_email',
+    'current_address',
+    'permanent_address',
+    'location',
+    'emergency_contact_name',
+    'emergency_contact_relationship',
+    'emergency_contact_number',
+  };
+
+  /// `PATCH /organizations/:orgId/employees/me` - the employee's own personal and contact details.
   ///
-  /// [changes] uses the UI's snake_case column names (`blood_group`, `bank_ifsc_code`, ...).
-  /// `email` is never sent: it is the sign-in identity and only HR can change it.
+  /// [changes] uses the UI's snake_case column names (`blood_group`, ...) and may only contain
+  /// [editableProfileFields]; anything else (HR-managed fields, `email`) throws [ArgumentError] before any request.
+  /// Returns the saved record.
   Future<Map<String, dynamic>> updateMe(Map<String, dynamic> changes) async {
-    final body = camelKeys({
-      for (final e in changes.entries)
-        if (e.key != 'email') e.key: e.value,
-    });
-    final data = await api.patch(orgPath('/employees/me'), body: body);
+    final restricted = changes.keys.where((k) => !editableProfileFields.contains(k)).toList();
+    if (restricted.isNotEmpty) {
+      throw ArgumentError('Not editable by the employee: ${restricted.join(', ')}');
+    }
+    final data = await api.patch(orgPath('/employees/me'), body: camelKeys(Map<String, dynamic>.from(changes)));
     return normalize(data);
   }
 

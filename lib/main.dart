@@ -2,10 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 import 'core/auth/auth_service.dart';
-import 'core/feature_flags.dart';
+import 'core/payslip_files.dart';
 import 'repositories/employee_repository.dart';
 import 'repositories/engagement_repository.dart';
 import 'repositories/leave_repository.dart';
@@ -13,7 +12,6 @@ import 'providers/role_provider.dart';
 import 'screens/splash_screen.dart';
 import 'screens/notification.dart';
 import 'screens/login_screen.dart';
-import 'screens/dashboard_screen.dart';
 import 'screens/leaves_screen.dart';
 import 'screens/events_calendar_screen.dart';
 import 'screens/payslip_screen.dart';
@@ -22,7 +20,7 @@ import 'screens/announcements_screen.dart';
 
 /// NOTIFICATION PLUGIN
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-FlutterLocalNotificationsPlugin();
+    FlutterLocalNotificationsPlugin();
 
 /// GLOBAL NAV KEY
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -63,30 +61,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 // 🔵 MAIN
 // ============================================================================
 
-
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Supabase Init
-  await Supabase.initialize(
-    url: 'https://erjqikaafyefaujyzrax.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVyanFpa2FhZnllZmF1anl6cmF4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUwNjIxMTUsImV4cCI6MjA3MDYzODExNX0.11w-rm-tZ7dcW-HIQnbu15jmGNo5YuQQgcS-NwSc0EE',
-    authOptions: const FlutterAuthClientOptions(
-      authFlowType: AuthFlowType.pkce,
-      autoRefreshToken: true,
-    ),
-  );
-
-  Supabase.instance.client.auth.onAuthStateChange.listen((data) {
-    final event = data.event;
-
-    if (event == AuthChangeEvent.signedOut) {
-      // ❌ REMOVE AUTO REDIRECT
-      print("User signed out (auto). Ignoring...");
-    }
-  });
-
-
 
   // Firebase Init
   await Firebase.initializeApp();
@@ -104,26 +80,25 @@ Future<void> main() async {
 
   final androidPlugin = flutterLocalNotificationsPlugin
       .resolvePlatformSpecificImplementation<
-      AndroidFlutterLocalNotificationsPlugin>();
+        AndroidFlutterLocalNotificationsPlugin
+      >();
   await androidPlugin?.createNotificationChannel(channel);
 
   // Local NOTIFICATION INIT
   const AndroidInitializationSettings androidInit =
-  AndroidInitializationSettings('@drawable/ic_stat_notify');
+      AndroidInitializationSettings('@drawable/ic_stat_notify');
 
-  const InitializationSettings initSettings =
-  InitializationSettings(android: androidInit);
+  const InitializationSettings initSettings = InitializationSettings(
+    android: androidInit,
+  );
 
   await flutterLocalNotificationsPlugin.initialize(
     initSettings,
 
     onDidReceiveNotificationResponse: (response) async {
-
       print("🔔 Notification clicked");
 
       final payload = response.payload;
-
-      print("Payload => $payload");
 
       if (payload == null) return;
 
@@ -141,7 +116,6 @@ Future<void> main() async {
       // LEAVE
       // =========================
       if (payload == "leave") {
-
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => LeavesScreen(
@@ -151,10 +125,7 @@ Future<void> main() async {
             ),
           ),
         );
-      }
-
-      else if (payload == "announcement") {
-
+      } else if (payload == "announcement") {
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => AnnouncementsScreen(
@@ -167,12 +138,10 @@ Future<void> main() async {
           ),
         );
       }
-
       // =========================
       // EVENT
       // =========================
       else if (payload == "event") {
-
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => EventsCalendarScreen(
@@ -183,12 +152,10 @@ Future<void> main() async {
           ),
         );
       }
-
       // =========================
       // PAYROLL
       // =========================
       else if (payload == "payroll") {
-
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => PayslipScreen(
@@ -199,12 +166,10 @@ Future<void> main() async {
           ),
         );
       }
-
       // =========================
       // SURVEY
       // =========================
       else if (payload == "survey") {
-
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) => SurveysScreen(
@@ -215,7 +180,6 @@ Future<void> main() async {
           ),
         );
       }
-
       // =========================
       // DEFAULT
       // =========================
@@ -235,31 +199,28 @@ Future<void> main() async {
   );
 
   // Auto-login check
-  bool isLoggedIn;
-  if (FeatureFlags.useAwsAuth) {
-    // AWS backend session (token store + /auth/resolve-user).
-    isLoggedIn = await AuthService.instance.restoreSession();
-    // A rejected refresh token ends the session: send the user to login.
-    AuthService.instance.api.onSessionExpired.listen((_) {
-      navigatorKey.currentState?.pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const LoginScreen()),
-        (_) => false,
-      );
-    });
-  } else {
-    final session = Supabase.instance.client.auth.currentSession;
-    if (session != null && session.user.email != null) {
-      FirebaseNotificationService.setupFCM(userEmail: session.user.email!);
-    }
-    isLoggedIn = session != null;
+  // AWS backend session (token store + /auth/resolve-user).
+  final bool isLoggedIn = await AuthService.instance.restoreSession();
+  // Push listeners (the device token is not stored: no AWS endpoint yet, see FirebaseNotificationService.persistToken).
+  final restored = AuthService.instance.currentUser;
+  if (isLoggedIn && restored != null) {
+    FirebaseNotificationService.startForUser(restored.email);
   }
+  // Downloaded payslip PDFs from an earlier run are removed once they are stale (best effort, in the background, never throws).
+  PayslipFiles.instance.deleteStale();
+  // A rejected refresh token ends the session: send the user to login (and the downloaded payslip PDFs go with it).
+  AuthService.instance.api.onSessionExpired.listen((_) {
+    PayslipFiles.instance.deleteAll();
+    navigatorKey.currentState?.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (_) => false,
+    );
+  });
 
   runApp(
     ChangeNotifierProvider(
       create: (_) => RoleProvider(),
-      child: MyApp(
-        isLoggedIn: isLoggedIn,
-      ),
+      child: MyApp(isLoggedIn: isLoggedIn),
     ),
   );
 }
@@ -279,11 +240,7 @@ Map<String, dynamic> buildAttendanceSummary(List<dynamic> logs) {
 
     final punchTime = DateTime.parse(log['punch_time']).toLocal();
 
-    final punchDate = DateTime(
-      punchTime.year,
-      punchTime.month,
-      punchTime.day,
-    );
+    final punchDate = DateTime(punchTime.year, punchTime.month, punchTime.day);
 
     if (punchDate == today) {
       todayFirstPunch ??= punchTime;
@@ -354,12 +311,11 @@ Future<Map<String, dynamic>> fetchHrmsContext() async {
         .where((l) => (l['balance'] ?? 0) > 0)
         .toList(),
     "attendance": buildAttendanceSummary(attendanceLogs),
-    "payroll": {
-      "salary": salaryRow['salary'],
-    },
+    "payroll": {"salary": salaryRow['salary']},
     "announcements": announcements,
   };
 }
+
 // ============================================================================
 // 🔵 UI THEME SYSTEM (Your new design system)
 // ============================================================================
@@ -372,10 +328,12 @@ class AppColors {
   static const body = Color(0xFF444444);
   static const subtext = Color(0xFF888888);
 }
+
 class AppRadius {
   static const card = 16.0;
   static const button = 16.0;
 }
+
 ThemeData buildAppTheme() {
   return ThemeData(
     useMaterial3: true,
@@ -390,10 +348,7 @@ ThemeData buildAppTheme() {
         fontFamily: "Montserrat",
         color: AppColors.body,
       ),
-      bodySmall: TextStyle(
-        fontSize: 14,
-        color: AppColors.subtext,
-      ),
+      bodySmall: TextStyle(fontSize: 14, color: AppColors.subtext),
       titleMedium: TextStyle(
         fontSize: 18,
         fontWeight: FontWeight.bold,
@@ -451,6 +406,7 @@ ThemeData buildAppTheme() {
     ),
   );
 }
+
 // ============================================================================
 // 🔵 ROOT APP
 // ============================================================================
@@ -468,18 +424,32 @@ class MyApp extends StatelessWidget {
     );
   }
 }
+
 // ============================================================================
 // 🔵 FIREBASE NOTIFICATION SERVICE
 // ============================================================================
 class FirebaseNotificationService {
   static bool _initialized = false;
 
+  /// The device token is NOT stored anywhere: there is no verified AWS endpoint for FCM token registration
+  /// yet, so nothing is written and no request is made. Always returns false.
+  static Future<bool> persistToken(String token, String email) async => false;
+
+  /// Starts the push listeners for a signed-in user; a failure here must never block sign-in.
+  static Future<void> startForUser(String email) async {
+    try {
+      await setupFCM(userEmail: email);
+    } catch (err) {
+      debugPrint('Push setup failed');
+    }
+  }
+
   static Future<void> setupFCM({required String userEmail}) async {
     if (_initialized) return;
     _initialized = true;
 
     FirebaseMessaging messaging = FirebaseMessaging.instance;
-    
+
     // Request permission
     NotificationSettings settings = await messaging.requestPermission(
       alert: true,
@@ -490,29 +460,17 @@ class FirebaseNotificationService {
 
     // Get token
     final token = await messaging.getToken();
-    print("🔑 FCM Token: $token");
 
     if (token != null) {
       try {
-        final response = await Supabase.instance.client
-            .from("employee_records")
-            .update({"fcm_token": token})
-            .eq("email", userEmail)
-            .select();
-
-        print("==================================");
-        print("UPDATE RESPONSE:");
-        print(response);
-        print("==================================");
-      } catch (e) {
-        print("❌ UPDATE ERROR");
-        print(e);
+        await persistToken(token, userEmail);
+      } catch (_) {
+        debugPrint('FCM token save failed');
       }
     }
 
     // 1. FOREGROUND LISTENER
     FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
-      print("📩 Foreground Message Received: ${message.notification?.title}");
       final notification = message.notification;
       if (notification != null) {
         const androidDetails = AndroidNotificationDetails(
@@ -532,27 +490,28 @@ class FirebaseNotificationService {
           notification.title,
           notification.body,
           details,
-          payload: message.data['payload'] ?? message.data['category'] ?? 'default',
+          payload:
+              message.data['payload'] ?? message.data['category'] ?? 'default',
         );
       }
     });
 
     // 2. WHEN USER TAPS NOTIFICATION (Background State)
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
-      print("🔔 Notification tapped while in background: ${message.data}");
       _handleNotificationClick(message.data);
     });
 
     // 3. INITIAL MESSAGE (Terminated State)
     messaging.getInitialMessage().then((RemoteMessage? message) {
       if (message != null) {
-        print("🔔 App launched from notification: ${message.data}");
         _handleNotificationClick(message.data);
       }
     });
   }
 
-  static Future<void> _handleNotificationClick(Map<String, dynamic> data) async {
+  static Future<void> _handleNotificationClick(
+    Map<String, dynamic> data,
+  ) async {
     final payload = data['payload'] ?? data['category'];
     final user = AuthService.instance.currentUser;
     if (user == null) return;
@@ -564,7 +523,11 @@ class FirebaseNotificationService {
 
       Widget destination;
       if (payload == "leave") {
-        destination = LeavesScreen(email: user.email, userData: employee, fetchHrmsContext: fetchHrmsContext);
+        destination = LeavesScreen(
+          email: user.email,
+          userData: employee,
+          fetchHrmsContext: fetchHrmsContext,
+        );
       } else if (payload == "announcement") {
         destination = AnnouncementsScreen(
           organizationId: employee['organization_id']?.toString() ?? '',
@@ -574,11 +537,23 @@ class FirebaseNotificationService {
           fetchHrmsContext: fetchHrmsContext,
         );
       } else if (payload == "event") {
-        destination = EventsCalendarScreen(email: user.email, userData: employee, fetchHrmsContext: fetchHrmsContext);
+        destination = EventsCalendarScreen(
+          email: user.email,
+          userData: employee,
+          fetchHrmsContext: fetchHrmsContext,
+        );
       } else if (payload == "payroll") {
-        destination = PayslipScreen(userEmail: user.email, userData: employee, fetchHrmsContext: fetchHrmsContext);
+        destination = PayslipScreen(
+          userEmail: user.email,
+          userData: employee,
+          fetchHrmsContext: fetchHrmsContext,
+        );
       } else if (payload == "survey") {
-        destination = SurveysScreen(userEmail: user.email, userData: employee, fetchHrmsContext: fetchHrmsContext);
+        destination = SurveysScreen(
+          userEmail: user.email,
+          userData: employee,
+          fetchHrmsContext: fetchHrmsContext,
+        );
       } else {
         destination = NotificationsScreen(
           employeeId: employeeId,
@@ -587,10 +562,11 @@ class FirebaseNotificationService {
           fetchHrmsContext: fetchHrmsContext,
         );
       }
-
-      navigatorKey.currentState?.push(MaterialPageRoute(builder: (_) => destination));
-    } catch (e) {
-      print("Error handling notification click: $e");
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(builder: (_) => destination),
+      );
+    } catch (_) {
+      debugPrint('Notification click handling failed');
     }
   }
 }

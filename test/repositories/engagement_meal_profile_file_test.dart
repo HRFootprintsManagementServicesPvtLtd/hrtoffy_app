@@ -51,16 +51,18 @@ void main() {
       expect(list.map((f) => f['id']), ['3', '2', '1']);
     });
 
-    test('surveys: active list and completed ids', () async {
+    test('surveys: the active list (engagement route) and the employee list (surveys module, active only)', () async {
       final s = await signedIn((req) async {
-        if (req.url.path.endsWith('/surveys/my-responses')) return ok([{'id': 'r1', 'survey_id': 's2', 'submitted_at': '2026-10-01T00:00:00Z'}]);
-        return ok({'items': [{'id': 's1', 'title': 'A'}, {'id': 's2', 'title': 'B'}]});
+        if (req.url.path.endsWith('/engagement/surveys')) return ok({'items': [{'id': 's1', 'title': 'A'}, {'id': 's2', 'title': 'B'}]});
+        return ok([{'id': 's3', 'title': 'C'}]);
       });
       final repo = EngagementRepository(auth: s.auth);
       expect((await repo.activeSurveys()).length, 2);
       expect(s.last.query['status'], 'active');
-      expect(await repo.completedSurveyIds(), {'s2'});
-      expect(s.last.path, '/organizations/$testOrgId/engagement/surveys/my-responses');
+      final mine = await repo.mySurveys();
+      expect(mine.single['id'], 's3');
+      expect(s.last.path, '/organizations/$testOrgId/surveys');
+      expect(s.last.query['status'], 'active');
     });
 
     test('submitSurveyResponse posts answers when not yet answered', () async {

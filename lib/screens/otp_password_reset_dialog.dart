@@ -1,16 +1,22 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
-final supabase = Supabase.instance.client;
+import '../core/api/api_client.dart';
+import '../core/auth/auth_service.dart';
+import '../core/auth/password_reset_rules.dart';
 
 class OTPPasswordResetDialog extends StatefulWidget {
   final String email;
-  const OTPPasswordResetDialog({Key? key, required this.email})
-      : super(key: key);
+
+  /// Overridable for tests; defaults to the app's session service.
+  final AuthService? authService;
+
+  const OTPPasswordResetDialog({
+    Key? key,
+    required this.email,
+    this.authService,
+  }) : super(key: key);
 
   @override
-  State<OTPPasswordResetDialog> createState() =>
-      _OTPPasswordResetDialogState();
+  State<OTPPasswordResetDialog> createState() => _OTPPasswordResetDialogState();
 }
 
 class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
@@ -25,15 +31,14 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
 
   Future<void> _resetPassword() async {
     final otp = _otpController.text.trim();
-    final password = _passwordController.text.trim();
-    final confirm = _confirmController.text.trim();
+    final password = _passwordController.text;
+    final confirm = _confirmController.text;
 
-    if (otp.length != 6) {
-      setState(() => _error = "Enter valid 6-digit OTP");
-      return;
-    }
-    if (password.length < 6) {
-      setState(() => _error = "Password must be at least 6 characters");
+    final problem =
+        PasswordResetRules.validateOtp(otp) ??
+        PasswordResetRules.validateNewPassword(password);
+    if (problem != null) {
+      setState(() => _error = problem);
       return;
     }
     if (password != confirm) {
@@ -47,28 +52,12 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
     });
 
     try {
-      debugPrint("OTP: Verifying OTP for ${widget.email}...");
-      final response = await supabase.functions.invoke(
-        'verify-otp-reset-password',
-        body: {
-          'email': widget.email,
-          'otp': otp,
-          'new_password': password,
-        },
-      );
-
-      debugPrint("OTP: Status => ${response.status}");
-      debugPrint("OTP: Data => ${response.data}");
-
-      if (response.status != 200 && response.status != 204) {
-        final errorMsg = response.data is Map ? (response.data['error'] ?? response.data['message']) : "Server error";
-        throw Exception(errorMsg.toString());
-      }
-
-      final data = response.data;
-      if (data is Map && data['success'] == false) {
-        throw Exception(data['error'] ?? data['message'] ?? "Invalid OTP or request");
-      }
+      await (widget.authService ?? AuthService.instance)
+          .confirmPasswordResetOtp(
+            email: widget.email,
+            otp: otp,
+            newPassword: password,
+          );
 
       if (!mounted) return;
 
@@ -81,11 +70,24 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
         ),
       );
     } catch (e) {
-      debugPrint("OTP: Reset Exception => $e");
-      setState(() => _error = e.toString().replaceAll("Exception:", "").trim());
+      debugPrint("OTP: reset failed");
+      if (mounted) setState(() => _error = _resetErrorText(e));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// A safe message: never the server's own text.
+  String _resetErrorText(Object e) {
+    if (e is ApiException) {
+      if (e.isNetworkError)
+        return "No connection. Please check your internet and try again.";
+      if (e.statusCode == 429)
+        return "Too many attempts. Please wait a minute and try again.";
+      if (e.statusCode == 400)
+        return "The OTP is invalid or has expired. Please check it or request a new one.";
+    }
+    return "Could not reset the password. Please try again.";
   }
 
   @override
@@ -147,12 +149,13 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
                 obscureText: !_showPassword,
                 decoration: InputDecoration(
                   labelText: "New Password",
+                  helperText:
+                      "At least 8 characters, with an uppercase letter and a number",
+                  helperMaxLines: 2,
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
                     icon: Icon(
-                      _showPassword
-                          ? Icons.visibility
-                          : Icons.visibility_off,
+                      _showPassword ? Icons.visibility : Icons.visibility_off,
                     ),
                     onPressed: () {
                       setState(() {
@@ -189,10 +192,7 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
 
               if (_error != null) ...[
                 const SizedBox(height: 8),
-                Text(
-                  _error!,
-                  style: const TextStyle(color: Colors.red),
-                ),
+                Text(_error!, style: const TextStyle(color: Colors.red)),
               ],
 
               const SizedBox(height: 16),
@@ -211,21 +211,21 @@ class _OTPPasswordResetDialogState extends State<OTPPasswordResetDialog> {
                   ),
                   child: _loading
                       ? const SizedBox(
-                    height: 22,
-                    width: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
+                          height: 22,
+                          width: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
                       : const Text(
-                    "Reset Password",
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
+                          "Reset Password",
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
                 ),
               ),
             ],

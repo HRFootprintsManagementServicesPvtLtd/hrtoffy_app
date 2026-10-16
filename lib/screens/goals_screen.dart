@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:intl/intl.dart';
+import '../repositories/goals_repository.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/drawer_route.dart';
 import 'dashboard_screen.dart';
@@ -18,11 +18,15 @@ class GoalsScreen extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function()? fetchHrmsContext;
 
+  /// Overridable for tests; defaults to the signed-in session.
+  final GoalsRepository? repository;
+
   const GoalsScreen({
     super.key,
     required this.userEmail,
     required this.userData,
     this.fetchHrmsContext,
+    this.repository,
   });
 
   @override
@@ -30,11 +34,10 @@ class GoalsScreen extends StatefulWidget {
 }
 
 class _GoalsScreenState extends State<GoalsScreen> {
-  final supabase = Supabase.instance.client;
+  late final GoalsRepository _goals = widget.repository ?? GoalsRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   bool loading = true;
   List<Map<String, dynamic>> allGoals = [];
-  String? employeeId;
 
   @override
   void initState() {
@@ -43,47 +46,22 @@ class _GoalsScreenState extends State<GoalsScreen> {
   }
 
   Future<void> _loadData() async {
+    setState(() => loading = true);
     try {
-      setState(() => loading = true);
-      
-      final userId = supabase.auth.currentUser?.id;
-      if (userId == null) return;
-
-      // Resolve employee strictly via user_id
-      final emp = await supabase
-          .from('employee_records')
-          .select('id')
-          .eq('user_id', userId)
-          .eq('status', 'active')
-          .maybeSingle();
-
-      if (emp == null) return;
-      employeeId = emp['id'].toString();
-
       await _fetchGoals();
-    } catch (e) {
-      debugPrint("Initialization error: $e");
     } finally {
       if (mounted) setState(() => loading = false);
     }
   }
 
+  /// Goals of the active performance cycle (the server decides which one it is).
   Future<void> _fetchGoals() async {
-    if (employeeId == null) return;
     try {
-      final response = await supabase
-          .from('employee_goals')
-          .select('title, description, category, weightage, status, progress_percentage, target_date, achievement_status, manager_rating, reviewer_rating, final_rating, manager_comments, reviewer_comments, created_at, submitted_at, manager_approved_at, manager_approved_by, reviewer_approved_at, reviewer_approved_by, timeline, framework_type')
-          .eq('emp_id', employeeId!)
-          .order('created_at', ascending: false);
-      
-      if (mounted) {
-        setState(() {
-          allGoals = List<Map<String, dynamic>>.from(response);
-        });
-      }
-    } catch (e) {
-      debugPrint("Fetch error: $e");
+      final rows = await _goals.goals();
+      if (mounted) setState(() => allGoals = rows);
+    } catch (_) {
+      // Same as before: a failed load leaves the list as it was (empty on first load).
+      debugPrint('Goals load failed');
     }
   }
 
@@ -118,7 +96,9 @@ class _GoalsScreenState extends State<GoalsScreen> {
                   child: _circleIconBtn(
                     icon: "assets/icons/notification.svg",
                     onTap: () {
-                      final id = widget.userData['id'] ?? widget.userData['employee_id'];
+                      final id =
+                          widget.userData['id'] ??
+                          widget.userData['employee_id'];
                       if (id != null) {
                         Navigator.push(
                           context,
@@ -184,11 +164,16 @@ class _GoalsScreenState extends State<GoalsScreen> {
                               alignment: Alignment.center,
                               child: Text(
                                 "No goals found",
-                                style: GoogleFonts.montserrat(color: Colors.grey),
+                                style: GoogleFonts.montserrat(
+                                  color: Colors.grey,
+                                ),
                               ),
                             )
                           : Column(
-                              children: allGoals.map((g) => _buildGoalCard(g)).toList(),
+                              children: [
+                                for (var i = 0; i < allGoals.length; i++)
+                                  _buildGoalCard(allGoals[i], i),
+                              ],
                             ),
                     ),
             ),
@@ -207,19 +192,54 @@ class _GoalsScreenState extends State<GoalsScreen> {
         showUnselectedLabels: true,
         onTap: (index) {
           if (index == 0) {
-            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(email: widget.userEmail, employeeId: widget.userData['id'] ?? '')));
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => DashboardScreen(
+                  email: widget.userEmail,
+                  employeeId: widget.userData['id'] ?? '',
+                ),
+              ),
+            );
             return;
           }
           if (index == 1) {
-            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => LeavesScreen(email: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext!)));
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => LeavesScreen(
+                  email: widget.userEmail,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext!,
+                ),
+              ),
+            );
             return;
           }
           if (index == 2) {
-            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => TimeAttendanceScreen(userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext!)));
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => TimeAttendanceScreen(
+                  userEmail: widget.userEmail,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext!,
+                ),
+              ),
+            );
             return;
           }
           if (index == 3) {
-            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => PayslipScreen(userEmail: widget.userEmail, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext!)));
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => PayslipScreen(
+                  userEmail: widget.userEmail,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext!,
+                ),
+              ),
+            );
             return;
           }
           if (index == 4) {
@@ -228,29 +248,72 @@ class _GoalsScreenState extends State<GoalsScreen> {
           }
         },
         items: [
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/dashboard.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Dashboard'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/leaves.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Leave'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/attendance.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Attendance'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/payroll.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Payslip'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/menu.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.blueAccent, BlendMode.srcIn)), label: 'More'),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/dashboard.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Dashboard',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/leaves.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Leave',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/attendance.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Attendance',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/payroll.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Payslip',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/menu.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(
+                Colors.blueAccent,
+                BlendMode.srcIn,
+              ),
+            ),
+            label: 'More',
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildGoalCard(Map<String, dynamic> g) {
+  /// Soft card backgrounds, cycled by position so neighbouring goals never share a colour.
+  static const _cardPastels = <Color>[
+    Color(0xFFD7E8FF), // blue
+    Color(0xFFFFE4EE), // pink
+    Color(0xFFDDF5E3), // mint
+    Color(0xFFEBDFF6), // lavender
+    Color(0xFFFFECE6), // peach
+    Color(0xFFD4F3F7), // aqua
+    Color(0xFFFFF3D1), // butter
+  ];
+
+  Widget _buildGoalCard(Map<String, dynamic> g, int index) {
     final progress = (g['progress_percentage'] ?? 0).toDouble();
     final status = (g['status'] ?? '').toString().toUpperCase();
     final category = g['category']?.toString();
     final weightage = g['weightage'];
-    
-    // Stable pastel color logic matching Travel/Loans/etc.
-    Color cardBg = const Color(0xFFD7E8FF); // Default blue
-    if (category != null) {
-      if (category.toLowerCase().contains('individual')) cardBg = const Color(0xFFD4F3F7);
-      if (category.toLowerCase().contains('kpi') || category.toLowerCase().contains('okr')) cardBg = const Color(0xFFEBDFF6);
-      if (category.toLowerCase().contains('learning')) cardBg = const Color(0xFFFFECE6);
-    }
+
+    final cardBg = _cardPastels[index % _cardPastels.length];
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -264,32 +327,70 @@ class _GoalsScreenState extends State<GoalsScreen> {
             children: [
               if (status.isNotEmpty)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(6)),
-                  child: Text(status, style: GoogleFonts.montserrat(fontSize: 9, fontWeight: FontWeight.bold)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black12,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    status,
+                    style: GoogleFonts.montserrat(
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               if (category != null)
-                Text(category, style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.black54)),
+                Text(
+                  category,
+                  style: GoogleFonts.montserrat(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black54,
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 12),
           Text(g['title'] ?? '-', style: EmployeeUi.title(16)),
           if (g['description'] != null) ...[
             const SizedBox(height: 6),
-            Text(g['description'], style: GoogleFonts.montserrat(fontSize: 12, color: Colors.black54, height: 1.4)),
+            Text(
+              g['description'],
+              style: GoogleFonts.montserrat(
+                fontSize: 12,
+                color: Colors.black54,
+                height: 1.4,
+              ),
+            ),
           ],
           const Divider(height: 24, color: Colors.black12),
           _cardRow("Framework", g['framework_type']),
           _cardRow("Timeline", g['timeline']),
           _cardRow("Weightage", weightage != null ? "$weightage%" : null),
           _cardRow("Target Date", _fmt(g['target_date'])),
-          _cardRow("Achievement", g['achievement_status']),
+          _cardRow("Achievement", _plain(g['achievement_status'])),
           const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text("Progress", style: GoogleFonts.montserrat(fontSize: 11, fontWeight: FontWeight.bold)),
-              Text("${progress.toInt()}%", style: GoogleFonts.montserrat(fontSize: 11, fontWeight: FontWeight.bold)),
+              Text(
+                "Progress",
+                style: GoogleFonts.montserrat(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Text(
+                "${progress.toInt()}%",
+                style: GoogleFonts.montserrat(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 8),
@@ -302,19 +403,26 @@ class _GoalsScreenState extends State<GoalsScreen> {
               valueColor: const AlwaysStoppedAnimation(EmployeeUi.primary),
             ),
           ),
-          if (g['manager_rating'] != null || g['reviewer_rating'] != null || g['final_rating'] != null) ...[
+          if (g['manager_rating'] != null ||
+              g['reviewer_rating'] != null ||
+              g['final_rating'] != null) ...[
             const SizedBox(height: 16),
             Row(
               children: [
-                if (g['manager_rating'] != null) _ratingBadge("Manager", g['manager_rating']),
-                if (g['reviewer_rating'] != null) _ratingBadge("Reviewer", g['reviewer_rating']),
-                if (g['final_rating'] != null) _ratingBadge("Final", g['final_rating']),
+                if (g['manager_rating'] != null)
+                  _ratingBadge("Manager", g['manager_rating']),
+                if (g['reviewer_rating'] != null)
+                  _ratingBadge("Reviewer", g['reviewer_rating']),
+                if (g['final_rating'] != null)
+                  _ratingBadge("Final", g['final_rating']),
               ],
             ),
           ],
-          if (g['manager_comments'] != null) _commentBox("Manager Remarks", g['manager_comments']),
-          if (g['reviewer_comments'] != null) _commentBox("Reviewer Remarks", g['reviewer_comments']),
-          
+          if (g['manager_comments'] != null)
+            _commentBox("Manager Remarks", g['manager_comments']),
+          if (g['reviewer_comments'] != null)
+            _commentBox("Reviewer Remarks", g['reviewer_comments']),
+
           // History / Dates
           const SizedBox(height: 16),
           _dateLine("Submitted", g['submitted_at']),
@@ -325,15 +433,37 @@ class _GoalsScreenState extends State<GoalsScreen> {
     );
   }
 
+  /// A number without a trailing ".0" (85.0 -> 85); anything else as it is.
+  String? _plain(dynamic v) {
+    if (v == null) return null;
+    if (v is num)
+      return v == v.truncate() ? v.truncate().toString() : v.toString();
+    return v.toString();
+  }
+
   Widget _cardRow(String label, dynamic value) {
-    if (value == null || value.toString().isEmpty) return const SizedBox.shrink();
+    if (value == null || value.toString().isEmpty)
+      return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: GoogleFonts.montserrat(fontSize: 11, color: Colors.black45, fontWeight: FontWeight.w500)),
-          Text(value.toString(), style: GoogleFonts.montserrat(fontSize: 11, fontWeight: FontWeight.w600)),
+          Text(
+            label,
+            style: GoogleFonts.montserrat(
+              fontSize: 11,
+              color: Colors.black45,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          Text(
+            value.toString(),
+            style: GoogleFonts.montserrat(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
@@ -343,11 +473,17 @@ class _GoalsScreenState extends State<GoalsScreen> {
     return Container(
       margin: const EdgeInsets.only(right: 8),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6)),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(6),
+      ),
       child: Column(
         children: [
           Text(label, style: const TextStyle(fontSize: 8, color: Colors.grey)),
-          Text(rating.toString(), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          Text(
+            rating.toString(),
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+          ),
         ],
       ),
     );
@@ -359,13 +495,26 @@ class _GoalsScreenState extends State<GoalsScreen> {
       width: double.infinity,
       margin: const EdgeInsets.only(top: 12),
       padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(color: Colors.white54, borderRadius: BorderRadius.circular(8)),
+      decoration: BoxDecoration(
+        color: Colors.white54,
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black38)),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.bold,
+              color: Colors.black38,
+            ),
+          ),
           const SizedBox(height: 2),
-          Text(comment, style: const TextStyle(fontSize: 11, color: Colors.black87)),
+          Text(
+            comment,
+            style: const TextStyle(fontSize: 11, color: Colors.black87),
+          ),
         ],
       ),
     );
@@ -375,7 +524,14 @@ class _GoalsScreenState extends State<GoalsScreen> {
     if (date == null) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(top: 4),
-      child: Text("$label: ${_fmt(date)}", style: const TextStyle(fontSize: 9, color: Colors.black38, fontStyle: FontStyle.italic)),
+      child: Text(
+        "$label: ${_fmt(date)}",
+        style: const TextStyle(
+          fontSize: 9,
+          color: Colors.black38,
+          fontStyle: FontStyle.italic,
+        ),
+      ),
     );
   }
 
@@ -394,10 +550,24 @@ class _GoalsScreenState extends State<GoalsScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         shape: BoxShape.circle,
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: IconButton(
-        icon: SvgPicture.asset(icon, width: 20, height: 20, colorFilter: const ColorFilter.mode(EmployeeUi.primary, BlendMode.srcIn)),
+        icon: SvgPicture.asset(
+          icon,
+          width: 20,
+          height: 20,
+          colorFilter: const ColorFilter.mode(
+            EmployeeUi.primary,
+            BlendMode.srcIn,
+          ),
+        ),
         onPressed: onTap,
       ),
     );

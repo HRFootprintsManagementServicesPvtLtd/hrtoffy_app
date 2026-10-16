@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import '../core/avatar.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:app_badge_plus/app_badge_plus.dart';
@@ -110,7 +111,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         managerName = userData!['manager_name'] ?? '--';
         managerEmail = userData!['manager_email'] ?? '--';
         if (managerEmail != '--' && managerName == '--') await fetchManagerData(managerEmail);
-        profileUrl = userData!['avatar_url'];
+        profileUrl = cleanAvatarUrl(userData!['avatar_url']);
       }
       fetchNotifications();
     } catch (e) { debugPrint("Initialize error: $e"); }

@@ -1,7 +1,7 @@
 import 'dart:async';
 
-/// Runs [task] every [interval] while started. Replaces Supabase Realtime
-/// subscriptions: the AWS backend has no push channel to the app, so screens
+/// Runs [task] every [interval] while started. Replaces the realtime
+/// subscriptions of the previous backend: the AWS backend has no push channel to the app, so screens
 /// that used a realtime INSERT feed (notifications, chat) poll instead.
 ///
 /// A tick is skipped while the previous one is still running, so a slow

@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
+import '../core/api/api_client.dart';
 import '../repositories/leave_repository.dart';
+import '../repositories/workflow_repository.dart';
 import '../widgets/skeleton_layouts.dart';
 import '../widgets/refreshable_screen.dart';
 import 'package:dropdown_button2/dropdown_button2.dart';
@@ -16,6 +18,16 @@ import '../widgets/bottom_nav_toffy_button.dart';
 import 'dashboard_screen.dart';
 import 'attendance_screen.dart';
 import 'payslip_screen.dart';
+
+/// The message when the calendar cannot load the caller's leave history. Only the history load uses this:
+/// a 404 there means the history is not available (the shared [friendlyLeaveError], which apply and cancel
+/// also use, is left as it was). Everything else falls through to [friendlyLeaveError].
+String leaveHistoryErrorMessage(Object e) {
+  if (e is ApiException && e.isNotFound) {
+    return "Leave history isn't available right now. Please try again later.";
+  }
+  return friendlyLeaveError(e);
+}
 
 class LeavesScreen extends StatefulWidget {
   final String email;
@@ -873,7 +885,7 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
       setState(() {
         leaveEvents = {};
         selectedEvents = [];
-        _loadError = friendlyLeaveError(e);
+        _loadError = leaveHistoryErrorMessage(e);
         _loadingEvents = false;
       });
     } finally {
@@ -1228,6 +1240,15 @@ class _LeaveCalendarTabState extends State<LeaveCalendarTab> {
               _legendDot(Colors.grey, 'Cancelled'),
             ],
           ),
+          // A history that loaded fine and is empty is not an error: say so plainly.
+          if (leaveEvents.isEmpty) ...[
+            const SizedBox(height: 16),
+            const Text(
+              'You have no leave applications in this period.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black54),
+            ),
+          ],
         ],
       ),
     );
@@ -1265,8 +1286,16 @@ class LeaveApplicationForm extends StatefulWidget {
   /// Tests only: the repository to use (defaults to the signed-in session's).
   final LeaveRepository? repository;
 
-  const LeaveApplicationForm({Key? key, required this.email, this.onSubmitted, this.repository})
-    : super(key: key);
+  /// Tests only: the repository that starts the approval chain after the application is stored.
+  final WorkflowRepository? workflowRepository;
+
+  const LeaveApplicationForm({
+    Key? key,
+    required this.email,
+    this.onSubmitted,
+    this.repository,
+    this.workflowRepository,
+  }) : super(key: key);
 
   @override
   State<LeaveApplicationForm> createState() => _LeaveApplicationFormState();
@@ -1274,6 +1303,8 @@ class LeaveApplicationForm extends StatefulWidget {
 
 class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
   late final LeaveRepository _leaves = widget.repository ?? LeaveRepository();
+  late final WorkflowRepository _workflows =
+      widget.workflowRepository ?? WorkflowRepository();
   final _formKey = GlobalKey<FormState>();
 
   String? leaveType;
@@ -1355,12 +1386,19 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
     try {
       // The employee and the approval workflow are the server's: it works out the working days
       // (holidays, weekly offs), checks the balance and starts the approval chain.
-      await _leaves.apply(
+      final created = await _leaves.apply(
         leaveTypeId: leaveType!,
         from: fromDate!,
         to: toDate!,
         reason: _reasonController.text.trim(),
         attachmentUrl: attachmentUrl,
+      );
+
+      // The application is stored. Like the website, start its approval chain as a separate step; a failure here is
+      // NOT a failed application (the call never throws), it only changes what the employee is told.
+      final routed = await _workflows.initialize(
+        WorkflowRepository.leaves,
+        created['id']?.toString(),
       );
 
       if (!mounted) return; // 🔐 VERY IMPORTANT
@@ -1369,8 +1407,12 @@ class _LeaveApplicationFormState extends State<LeaveApplicationForm> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Leave application submitted!'),
-          backgroundColor: Colors.green.shade700,
+          content: Text(
+            routed
+                ? 'Leave application submitted!'
+                : "Leave application submitted. We couldn't confirm that approval routing started, so your manager may not be notified yet.",
+          ),
+          backgroundColor: routed ? Colors.green.shade700 : Colors.orange.shade800,
         ),
       );
 

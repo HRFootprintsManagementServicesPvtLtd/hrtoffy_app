@@ -3,8 +3,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter/foundation.dart';
+import '../core/api/api_client.dart';
+import '../core/auth/auth_service.dart';
+import '../repositories/attendance_repository.dart';
 import '../models/work_site.dart';
 import '../utils/geo_fence.dart';
 import 'geo_tracker_service.dart';
@@ -13,117 +15,120 @@ const String googleGeocodingApiKey = 'AIzaSyB4um8D3zbPD4QnrRkZEqCs30Bp6HCR5a0';
 
 class AttendanceService {
   AttendanceService._();
-  static final SupabaseClient supabase = Supabase.instance.client;
+  // ---------------------------------------------------------------------------
+  // Attendance goes through the HR Toffy API (AttendanceRepository); nothing here talks to the previous backend.
+  // ---------------------------------------------------------------------------
+  static AttendanceRepository? _repository;
+  static Future<Position> Function()? _locationOverride;
+  static Future<String> Function(double lat, double lng)? _addressOverride;
 
+  static AttendanceRepository get _repo =>
+      _repository ??= AttendanceRepository();
+
+  /// Tests only: use a fake repository, location and reverse geocoder.
+  @visibleForTesting
+  static void debugOverride({
+    AttendanceRepository? repository,
+    Future<Position> Function()? location,
+    Future<String> Function(double lat, double lng)? address,
+  }) {
+    _repository = repository;
+    _locationOverride = location;
+    _addressOverride = address;
+  }
+
+  @visibleForTesting
+  static void debugReset() => debugOverride();
+
+  /// Today's attendance row (the day as the server sees it), or null when there is none yet.
   static Future<Map<String, dynamic>?> getTodayAttendance({
     required String employeeId,
   }) async {
-    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
-
-    final response = await supabase
-        .from('attendance')
-        .select()
-        .eq('employee_id', employeeId)
-        .eq('date', today)
-        .maybeSingle();
-
-    debugPrint("GET TODAY ATTENDANCE RAW:");
-    debugPrint(response.toString());
-
-    return response == null ? null : Map<String, dynamic>.from(response);
+    final status = await _repo.punchStatus(employeeId: employeeId);
+    return status['attendance'] as Map<String, dynamic>?;
   }
 
-  static Future<void> updateAttendance({
-    required String attendanceId,
-    required Map<String, dynamic> values,
-  }) async {
-    debugPrint("========== UPDATE START ==========");
-    debugPrint("Attendance ID: $attendanceId");
-    debugPrint("Values: $values");
-
-    final response = await supabase
-        .from('attendance')
-        .update(values)
-        .eq('id', attendanceId)
-        .select();
-
-    debugPrint("UPDATED ROW:");
-    debugPrint(response.toString());
-
-    debugPrint("========== UPDATE END ==========");
-  }
-
-  static Future<Map<String, dynamic>> createAttendance({
-    required Map<String, dynamic> values,
-  }) async {
-    final response = await supabase.from('attendance').insert(values).select('id').single();
-    return Map<String, dynamic>.from(response);
-  }
-
-  static Future<void> insertPunchLog({
-    required Map<String, dynamic> values,
-  }) async {
-    debugPrint("PUNCHLOG: Starting insert");
-
-    await supabase
-        .from('attendance_punch_logs')
-        .insert(values);
-
-    debugPrint("PUNCHLOG: Insert completed");
-  }
-
+  /// Today's punch logs, oldest first. The full rows (location, address, fence result) come from the
+  /// day-punch-logs endpoint; if that cannot be read the status endpoint's shorter log list is used.
   static Future<List<Map<String, dynamic>>> getTodayPunchLogs({
     required String employeeId,
   }) async {
-    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
-    return getPunchLogs(employeeId: employeeId, date: today);
+    final status = await _repo.punchStatus(employeeId: employeeId);
+    final att = status['attendance'] as Map<String, dynamic>?;
+    if (att == null) return [];
+
+    final today = status['today']?.toString();
+    if (today != null && today.isNotEmpty) {
+      try {
+        return await _repo.dayPunchLogs(
+          employeeId: employeeId,
+          date: today,
+          attendanceId: att['id']?.toString(),
+        );
+      } catch (e) {
+        debugPrint(
+          'getTodayPunchLogs detail error: ${friendlyAttendanceError(e)}',
+        );
+      }
+    }
+    return List<Map<String, dynamic>>.from(status['punchLogs'] as List);
   }
 
+  /// The punch logs of one day (`yyyy-MM-dd`), oldest first (My History tab). Empty when the day has no
+  /// attendance record or the logs cannot be read.
+  ///
+  /// The day's attendance record is found by its date (`GET /attendance/records?from=D&to=D`) and its logs are then read by
+  /// attendance id (`GET /attendance/{id}/punch-logs`).
+  ///
+  /// TODO(timezone): the date is the attendance date as recorded by the AWS backend, which is the server's (UTC) day.
+  /// An early-morning IST punch (about 00:00-05:30 IST) can therefore appear under the previous date. No
+  /// timezone conversion is applied here on purpose; the fix belongs to the backend's attendance-date rule.
   static Future<List<Map<String, dynamic>>> getPunchLogs({
     required String employeeId,
     required String date,
   }) async {
     try {
-      final att = await supabase
-          .from('attendance')
-          .select('id')
-          .eq('employee_id', employeeId)
-          .eq('date', date)
-          .maybeSingle();
-
-      if (att == null) return [];
-      
-      final res = await supabase
-          .from('attendance_punch_logs')
-          .select(
-          '''
-id,
-attendance_id,
-punch_time,
-punch_type,
-punch_lat,
-punch_lng,
-punch_address,
-site_id,
-in_fence,
-distance_m,
-accuracy_m,
-work_type
-'''
-      )
-          .eq('attendance_id', att['id'])
-          .order('punch_time', ascending: true);
-
-      return List<Map<String, dynamic>>.from(res ?? []);
+      final records = await _repo.attendanceRecords(
+        employeeId: employeeId,
+        from: date,
+        to: date,
+      );
+      if (records.isEmpty) return [];
+      final attendanceId = records.first['id']?.toString();
+      if (attendanceId == null || attendanceId.isEmpty) return [];
+      return await _repo.attendancePunchLogs(attendanceId);
     } catch (e) {
-      debugPrint("getPunchLogs error: $e");
+      debugPrint('getPunchLogs error: ${friendlyAttendanceError(e)}');
       return [];
     }
   }
 
+  /// The organization's attendance recording method (`in_system`, `both` or `biometric`).
+  /// An organization that has none set records in the system.
+  static Future<String> getAttendanceRecordingMethod() async {
+    return await _repo.attendanceRecordingMethod() ?? 'in_system';
+  }
+
+  /// Files a regularization request for the signed-in employee. The server decides the employee and the
+  /// approving manager. Returns the created request.
+  static Future<Map<String, dynamic>> submitRegularization({
+    required String date,
+    required String requestedPunchIn,
+    String? requestedPunchOut,
+    required String reason,
+  }) {
+    return _repo.submitRegularization(
+      date: date,
+      requestedPunchIn: requestedPunchIn,
+      requestedPunchOut: requestedPunchOut,
+      reason: reason,
+    );
+  }
+
+  /// The organization's geofence policy in the keys the screens read (`geo_fencing_enabled`,
+  /// `geo_fencing_mode`, `geo_only_for_office`, ...). The organization is the signed-in session's.
   static Future<Map<String, dynamic>?> getGeoFencePolicy(String orgId) async {
-    final org = await supabase.from('organization_settings').select('attendance_policies').eq('organization_id', orgId).maybeSingle();
-    return org?['attendance_policies'];
+    return _repo.geoPolicy();
   }
 
   static bool isGeoTrackOnly({
@@ -134,91 +139,60 @@ work_type
     return onlyForOffice && selectedWorkType != 'on-duty';
   }
 
-  static Future<List<WorkSite>> getResolvedWorkSites(Map<String, dynamic> employee) async {
+  /// The work sites that apply to this employee, by the same priority as before: sites assigned to the
+  /// employee; else the branch's active sites; else the entity's; else the organization's active sites.
+  static Future<List<WorkSite>> getResolvedWorkSites(
+    Map<String, dynamic> employee,
+  ) async {
     final empId = employee['id']?.toString();
     final branchId = employee['branch_id']?.toString();
     final entityId = employee['entity_id']?.toString();
-    final orgId = employee['organization_id']?.toString();
 
     if (empId == null) return [];
 
-    List<dynamic> data = [];
+    List<Map<String, dynamic>> data = [];
 
     try {
-      debugPrint("========== getResolvedWorkSites ==========");
-      debugPrint("empId=$empId");
-      debugPrint("branchId=$branchId");
-      debugPrint("entityId=$entityId");
-      debugPrint("orgId=$orgId");
+      final all = await _repo.workSites();
+      final assignments = await _repo.workSiteAssignments(employeeId: empId);
+      final assignedIds = assignments
+          .map((a) => a['work_site_id']?.toString())
+          .whereType<String>()
+          .toSet();
 
-      debugPrint("STEP 1: Checking direct assignments...");
-      final direct = await supabase
-          .from('work_site_assignments')
-          .select('work_sites(id, name, latitude, longitude, radius_meters)')
-          .eq('employee_id', empId);
-      debugPrint("STEP 1 DONE");
+      bool active(Map<String, dynamic> s) => s['is_active'] != false;
 
-      if (direct.isNotEmpty) {
-        data = direct
-            .map((e) => e['work_sites'])
-            .where((e) => e != null)
+      if (assignedIds.isNotEmpty) {
+        data = all
+            .where((s) => assignedIds.contains(s['id']?.toString()))
             .toList();
-        debugPrint("Using direct assignments");
-      } else {
-        if (branchId != null) {
-          debugPrint("STEP 2: Checking branch...");
-          final branchSites = await supabase
-              .from('work_sites')
-              .select('id, name, latitude, longitude, radius_meters')
-              .eq('branch_id', branchId)
-              .eq('is_active', true);
-          debugPrint("STEP 2 DONE");
-
-          if (branchSites.isNotEmpty) {
-            data = branchSites;
-            debugPrint("Using branch sites");
-          }
-        }
-
-        if (data.isEmpty && entityId != null) {
-          debugPrint("STEP 3: Checking entity...");
-          final entitySites = await supabase
-              .from('work_sites')
-              .select('id, name, latitude, longitude, radius_meters')
-              .eq('entity_id', entityId)
-              .eq('is_active', true);
-          debugPrint("STEP 3 DONE");
-
-          if (entitySites.isNotEmpty) {
-            data = entitySites;
-            debugPrint("Using entity sites");
-          }
-        }
-
-        if (data.isEmpty && orgId != null) {
-          debugPrint("STEP 4: Checking organization...");
-          final orgSites = await supabase
-              .from('work_sites')
-              .select('id, name, latitude, longitude, radius_meters')
-              .eq('organization_id', orgId)
-              .eq('is_active', true);
-          debugPrint("STEP 4 DONE");
-
-          data = orgSites;
-          debugPrint("Using organization sites");
-        }
       }
-
-      debugPrint("Total sites: ${data.length}");
-    } catch (e, st) {
-      debugPrint("getResolvedWorkSites ERROR: $e");
-      debugPrintStack(stackTrace: st);
+      if (data.isEmpty && branchId != null) {
+        data = all
+            .where((s) => active(s) && s['branch_id']?.toString() == branchId)
+            .toList();
+      }
+      if (data.isEmpty && entityId != null) {
+        data = all
+            .where((s) => active(s) && s['entity_id']?.toString() == entityId)
+            .toList();
+      }
+      if (data.isEmpty) {
+        data = all.where(active).toList();
+      }
+      debugPrint('getResolvedWorkSites: ${data.length} sites');
+    } catch (e) {
+      debugPrint('getResolvedWorkSites error: ${friendlyAttendanceError(e)}');
+      return [];
     }
 
-    return data.whereType<Map<String, dynamic>>().map(WorkSite.fromMap).toList();
+    return data.map(WorkSite.fromMap).toList();
   }
 
-  static Future<Position> getLocation() async {
+  static Future<Position> getLocation() =>
+      (_locationOverride ?? _deviceLocation)();
+
+  static Future<Position> _deviceLocation() async {
     if (!await Geolocator.isLocationServiceEnabled()) {
       throw Exception('Location services disabled');
     }
@@ -237,11 +211,17 @@ work_type
     );
   }
 
-  static Future<String> getAddress(double lat, double lng) async {
+  static Future<String> getAddress(double lat, double lng) =>
+      (_addressOverride ?? _reverseGeocode)(lat, lng);
+
+  static Future<String> _reverseGeocode(double lat, double lng) async {
     try {
       debugPrint("GEOCODE: Fetching address for $lat, $lng...");
-      final url = 'https://maps.googleapis.com/maps/api/geocode/json?latlng=$lat,$lng&key=$googleGeocodingApiKey';
-      final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 5));
+      final url =
+          'https://maps.googleapis.com/maps/api/geocode/json?latlng=$lat,$lng&key=$googleGeocodingApiKey';
+      final res = await http
+          .get(Uri.parse(url))
+          .timeout(const Duration(seconds: 5));
       final data = jsonDecode(res.body);
 
       if (data['results'] != null && data['results'].isNotEmpty) {
@@ -260,9 +240,15 @@ work_type
     return '$lat, $lng';
   }
 
-  static Future<Map<String, dynamic>?> checkGeoFence({required List<WorkSite> workSites}) async {
+  static Future<Map<String, dynamic>?> checkGeoFence({
+    required List<WorkSite> workSites,
+  }) async {
     final pos = await getLocation();
-    final nearest = findNearestSite(userLat: pos.latitude, userLng: pos.longitude, sites: workSites);
+    final nearest = findNearestSite(
+      userLat: pos.latitude,
+      userLng: pos.longitude,
+      sites: workSites,
+    );
 
     if (nearest == null) return null;
 
@@ -284,7 +270,12 @@ work_type
     required String geoMode,
     required bool geoTrackOnly,
     required List<WorkSite> workSites,
-    required Future<bool> Function(String siteName, double distance, double allowed) onShowGeoConfirm,
+    required Future<bool> Function(
+      String siteName,
+      double distance,
+      double allowed,
+    )
+    onShowGeoConfirm,
     required Future<void> Function() onSuccess,
     required Function(String error) onError,
     required Function(bool loading) onLoading,
@@ -311,7 +302,12 @@ work_type
     required String geoMode,
     required bool geoTrackOnly,
     required List<WorkSite> workSites,
-    required Future<bool> Function(String siteName, double distance, double allowed) onShowGeoConfirm,
+    required Future<bool> Function(
+      String siteName,
+      double distance,
+      double allowed,
+    )
+    onShowGeoConfirm,
     required VoidCallback onSuccess,
     required Function(String error) onError,
     required Function(bool loading) onLoading,
@@ -339,7 +335,12 @@ work_type
     required String geoMode,
     required bool geoTrackOnly,
     required List<WorkSite> workSites,
-    required Future<bool> Function(String siteName, double distance, double allowed) onShowGeoConfirm,
+    required Future<bool> Function(
+      String siteName,
+      double distance,
+      double allowed,
+    )
+    onShowGeoConfirm,
     required VoidCallback onSuccess,
     required Function(String error) onError,
     required Function(bool loading) onLoading,
@@ -348,7 +349,8 @@ work_type
     try {
       final empId = employee['id'];
       final orgId = employee['organization_id'];
-      if (empId == null || orgId == null) throw Exception('Invalid employee data');
+      if (empId == null || orgId == null)
+        throw Exception('Invalid employee data');
 
       Position pos;
       WorkSite? site;
@@ -373,13 +375,19 @@ work_type
           gpsAccuracy = pos.accuracy;
 
           if (!inFence && geoMode == 'strict') {
-            onError("You are outside allowed office radius (${distance!.toStringAsFixed(0)}m)");
+            onError(
+              "You are outside allowed office radius (${distance!.toStringAsFixed(0)}m)",
+            );
             onLoading(false);
             return;
           }
 
           if (!inFence && geoMode == 'lenient') {
-            final confirmed = await onShowGeoConfirm(site!.name, distance!, site.radiusMeters);
+            final confirmed = await onShowGeoConfirm(
+              site!.name,
+              distance!,
+              site.radiusMeters,
+            );
             if (!confirmed) {
               onLoading(false);
               return;
@@ -390,7 +398,11 @@ work_type
         pos = await getLocation();
         gpsAccuracy = pos.accuracy;
         if (geoTrackOnly) {
-          final nearest = findNearestSite(userLat: pos.latitude, userLng: pos.longitude, sites: workSites);
+          final nearest = findNearestSite(
+            userLat: pos.latitude,
+            userLng: pos.longitude,
+            sites: workSites,
+          );
           if (nearest != null) {
             site = nearest['site'] as WorkSite;
             inFence = nearest['inFence'];
@@ -400,102 +412,59 @@ work_type
       }
 
       final addr = await getAddress(pos.latitude, pos.longitude);
-      final localNow = DateTime.now();
-      final utcIso = localNow.toUtc().toIso8601String();
-      final date = DateFormat('yyyy-MM-dd').format(localNow);
 
-      debugPrint("STEP 1: Before getTodayAttendance");
-
-      var attendance = await getTodayAttendance(employeeId: empId);
-
-      debugPrint("STEP 1: After getTodayAttendance");
+      // Today's attendance, as the server sees it: its work type must match to punch out.
+      final attendance = await getTodayAttendance(employeeId: empId.toString());
 
       if (attendance != null && type == 'punch_out') {
         if (attendance['work_type'] != selectedWorkType) {
-          onError("Work type mismatch. Please select '${attendance['work_type']}' to punch out.");
+          onError(
+            "Work type mismatch. Please select '${attendance['work_type']}' to punch out.",
+          );
           onLoading(false);
           return;
         }
       }
 
-      if (attendance == null && type == 'punch_in') {
+      // The server records the punch (it sets the time and the date and resolves the fence itself).
+      // When no work site was evaluated, no fence result is claimed.
+      final result = await _repo.punch(
+        employeeId: empId.toString(),
+        punchType: type,
+        workType: selectedWorkType,
+        punchSource: 'mobile',
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+        accuracy: gpsAccuracy ?? pos.accuracy,
+        address: addr,
+        siteId: site?.id,
+        inFence: site == null ? null : inFence,
+        distanceM: site == null ? null : distance,
+      );
 
-        debugPrint("STEP 2: Before createAttendance");
-
-        attendance = await createAttendance(values: {
-          'employee_id': empId,
-          'organization_id': orgId,
-          'date': date,
-          'punch_in_time': utcIso,
-          'punch_in_lat': pos.latitude,
-          'punch_in_lng': pos.longitude,
-          'punch_in_address': addr,
-          'status': 'present',
-          'work_type': selectedWorkType,
-          'created_at': utcIso,
-        });
-
-        debugPrint("STEP 2: After createAttendance");
-      } else if (attendance != null && type == 'punch_out') {
-        await updateAttendance(attendanceId: attendance['id'], values: {
-          'punch_out_time': utcIso,
-          'punch_out_lat': pos.latitude,
-          'punch_out_lng': pos.longitude,
-          'punch_out_address': addr,
-          'updated_at': utcIso,
-        });
-      } else if (attendance != null && type == 'punch_in') {
-         await updateAttendance(attendanceId: attendance['id'], values: {
-            'status': 'present',
-            'punch_in_time': utcIso,
-            'punch_out_time': null,
-            'work_type': selectedWorkType,
-            'updated_at': utcIso,
-         });
-      }
-
-      final attId = attendance?['id'];
-      if (attId != null) {
-        await insertPunchLog(values: {
-          'attendance_id': attId,
-          'employee_id': empId,
-          'organization_id': orgId,
-          'punch_time': utcIso,
-          'punch_type': type,
-          'work_type': selectedWorkType,
-          'punch_lat': pos.latitude,
-          'punch_lng': pos.longitude,
-          'punch_address': addr,
-          'created_at': utcIso,
-          'site_id': site?.id,
-          'in_fence': inFence,
-          'distance_m': distance,
-          'accuracy_m': gpsAccuracy,
-          'punch_source': 'mobile',
-        });
-      }
-
+      final attId = result.attendanceId;
       if (type == 'punch_in' && attId != null) {
-        final shiftEndTime = localNow.copyWith(hour: 17, minute: 0);
+        final shiftEndTime = DateTime.now().copyWith(hour: 17, minute: 0);
 
         GeoTrackerService.startTracking(
           organizationId: orgId.toString(),
           employeeId: empId.toString(),
-          attendanceId: attId.toString(),
+          attendanceId: attId,
           intervalMinutes: 2,
           shiftEndTime: shiftEndTime,
+          sites: workSites,
         ).catchError((e) => debugPrint("GEOTRACKER START ERROR: $e"));
       }
 
       debugPrint("PUNCH COMPLETED");
 
       onSuccess();
-
-      onSuccess();
-    } catch (e, st) {
-      debugPrint("PUNCH ERROR: $e");
-      debugPrintStack(stackTrace: st);
-      onError(e.toString());
+    } catch (e) {
+      final safe = (e is ApiException || e is AuthFlowException)
+          ? friendlyAttendanceError(e)
+          : e.toString();
+      debugPrint("PUNCH ERROR: $safe");
+      onError(safe);
     } finally {
       onLoading(false);
     }

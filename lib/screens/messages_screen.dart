@@ -22,11 +22,15 @@ class MessagesScreen extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
 
+  /// Overridable for tests; defaults to the signed-in session.
+  final ChatService? chatService;
+
   const MessagesScreen({
     super.key,
     required this.userEmail,
     required this.userData,
     required this.fetchHrmsContext,
+    this.chatService,
   });
 
   @override
@@ -34,7 +38,7 @@ class MessagesScreen extends StatefulWidget {
 }
 
 class _MessagesScreenState extends State<MessagesScreen> {
-  final ChatService chatService = ChatService();
+  late final ChatService chatService = widget.chatService ?? ChatService();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
   bool loading = true;
@@ -51,7 +55,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
       final result = await chatService.loadConversations();
       setState(() { conversations = result; loading = false; });
     } catch (e) {
-      debugPrint(e.toString());
+      debugPrint('[Messages] loading chats failed');
       setState(() { loading = false; });
     }
   }

@@ -5,7 +5,9 @@ class ManagerKpiCards extends StatelessWidget {
   final int directReports;
   final int indirectReports;
   final int reviewCount;
-  final int onLeaveCount;
+
+  /// Null when the server has no manager-scoped answer for it: shown as "-", never as 0.
+  final int? onLeaveCount;
 
   const ManagerKpiCards({
     super.key,
@@ -59,7 +61,7 @@ class ManagerKpiCards extends StatelessWidget {
 
   Widget _buildKpiCard({
     required IconData icon,
-    required int count,
+    required int? count,
     required String label,
     required Color color,
     required Color iconColor,
@@ -75,13 +77,11 @@ class ManagerKpiCards extends StatelessWidget {
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Icon(icon, color: iconColor, size: 20),
-            ],
+            children: [Icon(icon, color: iconColor, size: 20)],
           ),
           const Spacer(),
           Text(
-            count.toString(),
+            count?.toString() ?? '-',
             style: GoogleFonts.montserrat(
               fontSize: 24,
               fontWeight: FontWeight.bold,

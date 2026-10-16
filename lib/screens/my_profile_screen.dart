@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import '../core/api/api_client.dart';
 import '../core/auth/auth_service.dart';
+import '../core/avatar.dart';
 import '../repositories/employee_repository.dart';
 import '../repositories/file_repository.dart';
 import '../repositories/profile_repository.dart';
@@ -28,16 +29,85 @@ import 'leaves_screen.dart';
 import 'attendance_screen.dart';
 import 'payslip_screen.dart';
 
+/// What the profile screen tells the user about a failed call.
+///
+/// A 404 gets a neutral message instead of the server's own text: the endpoint may not be available yet, or
+/// the record may be gone, and the user cannot act on either. Callers where a 404 has a clearer meaning pass
+/// [notFound] (for example "this document couldn't be found").
+String profileErrorMessage(Object e, {String? notFound}) {
+  if (e is ApiException) {
+    if (e.isNetworkError) return 'Network problem. Check your connection and retry.';
+    if (e.isForbidden) return "You don't have permission to perform this action.";
+    if (e.isUnauthorized) return 'Session expired — please sign in again.';
+    if (e.isNotFound) return notFound ?? "This isn't available right now. Please try again later or contact HR.";
+    if (e.isServerError) return 'The server is busy right now. Please pull to retry.';
+    return e.message;
+  }
+  if (e is AuthFlowException) return e.message;
+  if (e is TimeoutException) {
+    return 'Taking longer than usual — pull to retry.';
+  }
+  return e.toString();
+}
+
+/// What the user sees when SAVING their profile fails. Same as [profileErrorMessage] except for a 404: the save route
+/// (`PATCH /employees/me`) is missing on the server, which is not something HR can fix and not a missing record, so
+/// say plainly that nothing was saved. The server's own text is shown for validation errors (400/422).
+String profileSaveErrorMessage(Object e) {
+  if (e is ApiException && e.isNotFound) {
+    return "Profile editing isn't available on the server yet, so your changes were not saved. Please try again later.";
+  }
+  return profileErrorMessage(e);
+}
+
+/// The website's rules for the profile fields an employee may edit (`EditMyDetailsForm`): a phone number is 7 to 20
+/// characters of digits, spaces and `+ - ( )`, and a date of birth cannot be in the future or make the employee younger
+/// than 14. Returns a message for the first problem, or null. Empty values are allowed (they clear the field).
+String? profileFieldError(Map<String, dynamic> updates, {DateTime? now}) {
+  final phonePattern = RegExp(r'^[+\-\d\s()]{7,20}$');
+  for (final key in const ['phone', 'emergency_contact_number']) {
+    final v = updates[key]?.toString().trim() ?? '';
+    if (v.isNotEmpty && !phonePattern.hasMatch(v)) {
+      return 'Enter a valid phone number (7 to 20 digits; spaces, + - ( ) are allowed).';
+    }
+  }
+  final dobRaw = updates['date_of_birth']?.toString() ?? '';
+  if (dobRaw.isNotEmpty) {
+    final dob = DateTime.tryParse(dobRaw);
+    final today = now ?? DateTime.now();
+    if (dob == null) return 'Enter a valid date of birth.';
+    if (dob.isAfter(today)) return 'The date of birth cannot be in the future.';
+    final fourteen = DateTime(dob.year + 14, dob.month, dob.day);
+    if (fourteen.isAfter(today)) return 'You must be at least 14 years old.';
+  }
+  return null;
+}
+
+/// The fields the website lets an employee edit themselves. Everything else on the profile (bank, PAN, Aadhaar, UAN,
+/// department, designation, grade, status) is managed by HR, which on the website goes through approval.
+const Set<String> kEmployeeEditableProfileFields = EmployeeRepository.editableProfileFields;
+
+/// Used where a 404 means the stored document itself is missing (opening, downloading or deleting it).
+const String kDocumentNotFoundMessage = "This document couldn't be found. It may have been removed.";
+
 class MyProfileScreen extends StatefulWidget {
   final String email;
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
+
+  /// Tests only: the repositories to read and write through (default to the signed-in session's).
+  final EmployeeRepository? employeeRepository;
+  final ProfileRepository? profileRepository;
+  final FileRepository? fileRepository;
 
   const MyProfileScreen({
     Key? key,
     required this.email,
     required this.userData,
     required this.fetchHrmsContext,
+    this.employeeRepository,
+    this.profileRepository,
+    this.fileRepository,
   }) : super(key: key);
 
   @override
@@ -48,10 +118,13 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     with TickerProviderStateMixin,
         AutomaticKeepAliveClientMixin,
         RefreshableScreen<MyProfileScreen> {
-  final _employees = EmployeeRepository();
-  final _profile = ProfileRepository();
-  final _files = FileRepository();
+  late final EmployeeRepository _employees = widget.employeeRepository ?? EmployeeRepository();
+  late final ProfileRepository _profile = widget.profileRepository ?? ProfileRepository();
+  late final FileRepository _files = widget.fileRepository ?? FileRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  /// The usable profile photo address (null for none, including a removed photo stored as an empty string).
+  String? get _avatar => cleanAvatarUrl(_emp?['avatar_url']);
 
   int _bottomTabIndex = 0;
   Map<String, dynamic>? _emp;
@@ -62,7 +135,6 @@ class _MyProfileScreenState extends State<MyProfileScreen>
   String? _companyLogoUrl;
   TabController? _tabController;
   final ImagePicker _picker = ImagePicker();
-  bool _hasDependenciesRunOnce = false;
   bool _isUploadingAvatar = false;
   bool _loading = false;
 
@@ -85,31 +157,13 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     super.dispose();
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_hasDependenciesRunOnce) {
-      _hasDependenciesRunOnce = true;
-      return;
-    }
-    startLoad();
-  }
+  // The profile is loaded once in initState (and again on pull-to-refresh or after an edit). It is deliberately NOT
+  // reloaded from didChangeDependencies: that fires for every MediaQuery change, so each time the on-screen keyboard
+  // opened for an editor the whole profile was re-fetched and replaced by the loading skeleton underneath the dialog.
 
   // ------------ Error helper ------------
-  String _friendly(Object e) {
-    if (e is ApiException) {
-      if (e.isNetworkError) return 'Network problem. Check your connection and retry.';
-      if (e.isForbidden) return "You don't have permission to perform this action.";
-      if (e.isUnauthorized) return 'Session expired — please sign in again.';
-      if (e.isServerError) return 'The server is busy right now. Please pull to retry.';
-      return e.message;
-    }
-    if (e is AuthFlowException) return e.message;
-    if (e is TimeoutException) {
-      return 'Taking longer than usual — pull to retry.';
-    }
-    return e.toString();
-  }
+  /// [notFound] replaces the generic 404 text where a 404 means something specific (a missing document).
+  String _friendly(Object e, {String? notFound}) => profileErrorMessage(e, notFound: notFound);
 
   void _snack(String msg) {
     if (!mounted) return;
@@ -135,7 +189,14 @@ class _MyProfileScreenState extends State<MyProfileScreen>
       final lists = await Future.wait<List<Map<String, dynamic>>>([
         safe('nominees', _profile.nominees()),
         safe('insurance', _profile.insurancePolicies()),
-        safe('documents', _profile.documents()),
+        _profile.documents().then<List<Map<String, dynamic>>>((rows) {
+          _documentsError = null;
+          return rows;
+        }).catchError((Object e) {
+          debugPrint('documents load error: $e');
+          _documentsError = _friendly(e);
+          return <Map<String, dynamic>>[];
+        }),
       ]);
 
       if (!mounted) return;
@@ -172,13 +233,16 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     return emp;
   }
 
-  Future<void> _reloadEmployee() async {
+  /// Re-reads the employee record from the server. Returns false when it could not be refreshed.
+  Future<bool> _reloadEmployee() async {
     try {
       final emp = await _fetchEmployee().timeout(const Duration(seconds: 15));
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() => _emp = emp);
+      return true;
     } catch (e) {
       debugPrint('_reloadEmployee error: $e');
+      return false;
     }
   }
 
@@ -193,14 +257,22 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     }
   }
 
+  /// Why the document list could not be loaded (null when it loaded). Shown under "Documents" so an empty list is never mistaken
+  /// for "nothing uploaded" when the request actually failed.
+  String? _documentsError;
+
   Future<void> _reloadDocuments() async {
     if (_emp == null) return;
     try {
       final rows = await _profile.documents().timeout(const Duration(seconds: 15));
       if (!mounted) return;
-      setState(() => employeeDocuments = rows);
+      setState(() {
+        employeeDocuments = rows;
+        _documentsError = null;
+      });
     } catch (e) {
       debugPrint('_reloadDocuments error: $e');
+      if (mounted) setState(() => _documentsError = _friendly(e));
     }
   }
 
@@ -226,19 +298,36 @@ class _MyProfileScreenState extends State<MyProfileScreen>
       final dob = changes['date_of_birth'];
       if (dob is String && dob.length > 10) changes['date_of_birth'] = dob.substring(0, 10);
 
+      // Only what the website lets an employee edit is ever sent; the rest is managed by HR.
+      if (changes.keys.any((k) => !kEmployeeEditableProfileFields.contains(k))) {
+        _snack('These details are managed by HR and cannot be changed here.');
+        return false;
+      }
+      final problem = profileFieldError(changes);
+      if (problem != null) {
+        _snack(problem);
+        return false;
+      }
+
+      // Success only when the server accepted the write (a non-2xx throws). The displayed profile is then re-read
+      // from the server rather than patched locally, so what is shown is what was stored.
       await _employees.updateMe(changes);
-      await _reloadEmployee();
-      if (showSnack) _snack("Updated");
+      final refreshed = await _reloadEmployee();
+      if (showSnack) {
+        _snack(refreshed
+            ? 'Details updated. Your personal details were saved.'
+            : 'Details saved, but the profile could not be refreshed. Pull down to refresh.');
+      }
       return true;
     } catch (e) {
-      _snack(_friendly(e));
+      _snack(profileSaveErrorMessage(e));
       return false;
     }
   }
 
   // ------------ Documents: preview/download ------------
   /// A stored document reference is a `bucket/path` reference from the file API, a legacy bare path
-  /// (`personal/<id>/x.pdf`) or a full URL from the Supabase era; the server resolves all three.
+  /// (`personal/<id>/x.pdf`) or a full storage URL from the previous backend; the server resolves all three.
   String _docBucketHint(String raw) {
     final p = raw.startsWith('/') ? raw.substring(1) : raw;
     return p.startsWith('claim-documents/') ? 'claim-documents' : 'employee-documents';
@@ -261,10 +350,10 @@ class _MyProfileScreenState extends State<MyProfileScreen>
           return await _files.url(raw, bucketHint: other, expiresInSeconds: 3600);
         } catch (_) {}
       }
-      _snack(_friendly(e));
+      _snack(_friendly(e, notFound: kDocumentNotFoundMessage));
       return null;
     } catch (e) {
-      _snack(_friendly(e));
+      _snack(_friendly(e, notFound: kDocumentNotFoundMessage));
       return null;
     }
   }
@@ -310,7 +399,7 @@ class _MyProfileScreenState extends State<MyProfileScreen>
         _snack("Download completed");
       }
     } catch (e) {
-      _snack("Download failed: ${_friendly(e)}");
+      _snack("Download failed: ${_friendly(e, notFound: kDocumentNotFoundMessage)}");
     } finally {
       client?.close(force: true);
     }
@@ -374,7 +463,7 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     try {
       await _profile.deleteDocument(doc["id"].toString());
 
-      // Best effort: also remove the stored file (old Supabase-era URLs cannot be removed here).
+      // Best effort: also remove the stored file (full URLs from the previous backend cannot be removed here).
       final raw = (doc['file_url'] ?? '').toString();
       if (raw.isNotEmpty && !raw.startsWith('http')) {
         try {
@@ -394,8 +483,27 @@ class _MyProfileScreenState extends State<MyProfileScreen>
 
       _snack("Document deleted successfully");
     } catch (e) {
-      _snack("Delete failed: ${_friendly(e)}");
+      _snack("Delete failed: ${_friendly(e, notFound: kDocumentNotFoundMessage)}");
     }
+  }
+
+  /// Like `showDialog`, but the returned future completes only after the dialog route has been REMOVED (its exit
+  /// animation finished), not as soon as it is popped. The editors below own `TextEditingController`s and dispose them
+  /// when this future completes: disposing them at pop time, while the dialog is still animating out, makes its
+  /// `TextField`s use a disposed controller ("A TextEditingController was used after being disposed"), which in a debug
+  /// build is followed by follow-up framework assertions such as `'_dependents.isEmpty': is not true`.
+  Future<T?> _showEditDialog<T>({
+    required BuildContext context,
+    required WidgetBuilder builder,
+  }) {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final route = DialogRoute<T>(
+      context: context,
+      builder: builder,
+      themes: InheritedTheme.capture(from: context, to: navigator.context),
+    );
+    navigator.push(route);
+    return route.completed;
   }
 
   // ------------ Nominee edit ------------
@@ -408,7 +516,7 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     );
 
     try {
-      await showDialog(
+      await _showEditDialog(
         context: context,
         builder: (_) => AlertDialog(
           title: const Text("Edit Nominee"),
@@ -585,32 +693,6 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
-  }
-
-  void _editField(String title, String field, dynamic currentValue) {
-    final controller =
-    TextEditingController(text: currentValue?.toString() ?? '');
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text("Edit $title"),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(hintText: "Enter $title"),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Cancel")),
-          ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                await _updateProfile({field: controller.text});
-              },
-              child: const Text("Save")),
-        ],
-      ),
-    ).then((_) => controller.dispose());
   }
 
   String _formatDate(dynamic raw) {
@@ -868,7 +950,7 @@ class _MyProfileScreenState extends State<MyProfileScreen>
           title: "Work Information",
           color: const Color(0xFFF3ECFF),
           icon: Icons.work_outline,
-          onEdit: null,
+          managedByHr: true,
           child: _buildWorkInfo(),
         ),
         _sectionCard(
@@ -887,14 +969,14 @@ class _MyProfileScreenState extends State<MyProfileScreen>
           title: "Bank Details",
           color: const Color(0xFFE8F5E9),
           icon: Icons.account_balance_outlined,
-          onEdit: () => _editBankDialog(),
+          managedByHr: true,
           child: _buildBankDetails(),
         ),
         _sectionCard(
           title: "Statutory Details",
           color: const Color(0xFFFCE4EC),
           icon: Icons.gavel_outlined,
-          onEdit: () => _editStatutoryDialog(),
+          managedByHr: true,
           child: _buildStatutoryDetails(),
         ),
         _sectionCard(
@@ -938,12 +1020,12 @@ class _MyProfileScreenState extends State<MyProfileScreen>
             children: [
               GestureDetector(
                 onTap: () {
-                  if (_emp?['avatar_url'] == null) return;
+                  if (_avatar == null) return;
                   Navigator.push(
                     context,
                     MaterialPageRoute(
                       builder: (_) => FullScreenProfileImage(
-                        imageUrl: _emp!['avatar_url'],
+                        imageUrl: _avatar!,
                       ),
                     ),
                   );
@@ -953,10 +1035,10 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                   child: CircleAvatar(
                     radius: 55,
                     backgroundColor: Colors.blue.shade100,
-                    backgroundImage: _emp?['avatar_url'] != null
-                        ? CachedNetworkImageProvider(_emp!['avatar_url'])
+                    backgroundImage: _avatar != null
+                        ? CachedNetworkImageProvider(_avatar!)
                         : null,
-                    child: _emp?['avatar_url'] == null
+                    child: _avatar == null
                         ? Text(
                       (_emp?['full_name'] ?? "U")[0],
                       style: const TextStyle(
@@ -1015,7 +1097,8 @@ class _MyProfileScreenState extends State<MyProfileScreen>
         required Color color,
         required IconData icon,
         required Widget child,
-        VoidCallback? onEdit}) {
+        VoidCallback? onEdit,
+        bool managedByHr = false}) {
     return Container(
       margin: const EdgeInsets.only(bottom: 18),
       padding: const EdgeInsets.all(20),
@@ -1034,6 +1117,15 @@ class _MyProfileScreenState extends State<MyProfileScreen>
               child: Text(title,
                   style: const TextStyle(
                       fontSize: 18, fontWeight: FontWeight.bold))),
+          if (managedByHr)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(10)),
+              child: const Text("Managed by HR",
+                  style: TextStyle(fontSize: 11, color: Colors.black54)),
+            ),
           if (onEdit != null)
             IconButton(
                 onPressed: () {
@@ -1098,11 +1190,17 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     ]);
   }
 
+  /// The website stores gender and marital status in lower case; show them capitalised.
+  String? _capitalized(dynamic v) {
+    final s = v?.toString() ?? '';
+    return s.isEmpty ? null : s[0].toUpperCase() + s.substring(1);
+  }
+
   Widget _buildPersonalInfo() {
     return Column(children: [
-      _modernInfo("Gender", _emp?['gender']),
+      _modernInfo("Gender", _capitalized(_emp?['gender'])),
       _modernInfo("Blood Group", _emp?['blood_group']),
-      _modernInfo("Marital Status", _emp?['marital_status']),
+      _modernInfo("Marital Status", _capitalized(_emp?['marital_status'])),
       _modernInfo("Current Address", _emp?['current_address']),
       _modernInfo("Permanent Address", _emp?['permanent_address']),
     ]);
@@ -1172,6 +1270,9 @@ class _MyProfileScreenState extends State<MyProfileScreen>
   }
 
   Widget _buildDocuments() {
+    if (_documentsError != null && employeeDocuments.isEmpty) {
+      return Text("Documents couldn't be loaded: $_documentsError", style: const TextStyle(color: Colors.redAccent));
+    }
     if (employeeDocuments.isEmpty) {
       return const Text("No documents uploaded.");
     }
@@ -1215,15 +1316,19 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     TextEditingController(text: _emp?['current_address']?.toString() ?? '');
     final permanentAddress =
     TextEditingController(text: _emp?['permanent_address']?.toString() ?? '');
-    String gender = (_emp?['gender'] ?? '').toString();
+    // The website stores gender and marital status in lower case ("male", "single"); match case-insensitively so
+    // values saved from either client pre-select, and save the website's form.
+    String gender = (_emp?['gender'] ?? '').toString().toLowerCase();
     String blood = (_emp?['blood_group'] ?? '').toString();
-    String marital = (_emp?['marital_status'] ?? '').toString();
+    String marital = (_emp?['marital_status'] ?? '').toString().toLowerCase();
+    bool saving = false;
 
-    const genders = ["Male", "Female", "Other"];
+    const genders = ["male", "female", "other"];
     const bloodGroups = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
-    const maritalStatus = ["Single", "Married", "Divorced", "Widowed"];
+    const maritalStatus = ["single", "married", "divorced", "widowed"];
+    String label(String v) => v.isEmpty ? v : v[0].toUpperCase() + v.substring(1);
 
-    showDialog(
+    _showEditDialog(
       context: context,
       builder: (context) {
         return StatefulBuilder(
@@ -1241,7 +1346,7 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                       const InputDecoration(labelText: "Gender"),
                       items: genders
                           .map((e) =>
-                          DropdownMenuItem(value: e, child: Text(e)))
+                          DropdownMenuItem(value: e, child: Text(label(e))))
                           .toList(),
                       onChanged: (v) =>
                           setDialogState(() => gender = v ?? ""),
@@ -1268,7 +1373,7 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                           labelText: "Marital Status"),
                       items: maritalStatus
                           .map((e) =>
-                          DropdownMenuItem(value: e, child: Text(e)))
+                          DropdownMenuItem(value: e, child: Text(label(e))))
                           .toList(),
                       onChanged: (v) =>
                           setDialogState(() => marital = v ?? ""),
@@ -1295,16 +1400,25 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                     onPressed: () => Navigator.pop(context),
                     child: const Text("Cancel")),
                 ElevatedButton(
-                    onPressed: () async {
-                      Navigator.pop(context);
-                      await _updateProfile({
-                        'gender': gender,
-                        'blood_group': blood,
-                        'marital_status': marital,
-                        'current_address': currentAddress.text.trim(),
-                        'permanent_address': permanentAddress.text.trim(),
-                      });
-                    },
+                    onPressed: saving
+                        ? null
+                        : () async {
+                            setDialogState(() => saving = true);
+                            final saved = await _updateProfile({
+                              'gender': gender,
+                              'blood_group': blood,
+                              'marital_status': marital,
+                              'current_address': currentAddress.text.trim(),
+                              'permanent_address': permanentAddress.text.trim(),
+                            });
+                            // On failure the editor stays open so the input is not lost.
+                            if (!context.mounted) return;
+                            if (saved) {
+                              Navigator.pop(context);
+                            } else {
+                              setDialogState(() => saving = false);
+                            }
+                          },
                     child: const Text("Save")),
               ],
             );
@@ -1317,116 +1431,6 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     });
   }
 
-  void _editBankDialog() {
-    final bName = TextEditingController(text: _emp?['bank_name']?.toString() ?? '');
-    final acc = TextEditingController(text: _emp?['bank_account_no']?.toString() ?? '');
-    final ifsc = TextEditingController(text: _emp?['bank_ifsc_code']?.toString() ?? '');
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Edit Bank Details"),
-        content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(
-                  controller: bName,
-                  decoration: const InputDecoration(labelText: "Bank Name")),
-              TextField(
-                  controller: acc,
-                  decoration:
-                  const InputDecoration(labelText: "Account Number")),
-              TextField(
-                  controller: ifsc,
-                  decoration: const InputDecoration(labelText: "IFSC Code")),
-            ])),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Cancel")),
-          ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                await _updateProfile({
-                  'bank_name': bName.text.trim(),
-                  'bank_account_no': acc.text.trim(),
-                  'bank_ifsc_code': ifsc.text.trim(),
-                });
-              },
-              child: const Text("Save")),
-        ],
-      ),
-    ).then((_) {
-      bName.dispose();
-      acc.dispose();
-      ifsc.dispose();
-    });
-  }
-
-  Future<void> _editStatutoryDialog() async {
-    final pan = TextEditingController(
-      text: _emp?['pan_no']?.toString() ?? '',
-    );
-
-    final aadhaar = TextEditingController(
-      text: _emp?['aadhaar_number']?.toString() ?? '',
-    );
-
-    final uan = TextEditingController(
-      text: _emp?['uan_no']?.toString() ?? '',
-    );
-
-    try {
-      await showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text("Edit Statutory Details"),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                    controller: pan,
-                    decoration:
-                    const InputDecoration(labelText: "PAN Number")),
-                const SizedBox(height: 12),
-                TextField(
-                    controller: aadhaar,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                        labelText: "Aadhaar Number")),
-                const SizedBox(height: 12),
-                TextField(
-                    controller: uan,
-                    decoration:
-                    const InputDecoration(labelText: "UAN Number")),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text("Cancel")),
-            ElevatedButton(
-                onPressed: () async {
-                  Navigator.pop(context);
-                  await _updateProfile({
-                    'pan_no': pan.text.trim(),
-                    'aadhaar_number': aadhaar.text.trim(),
-                    'uan_no': uan.text.trim(),
-                  });
-                },
-                child: const Text("Save")),
-          ],
-        ),
-      );
-    } catch (e) {
-      _snack("Could not open editor: ${_friendly(e)}");
-    } finally {
-      pan.dispose();
-      aadhaar.dispose();
-      uan.dispose();
-    }
-  }
-
   void _editEmergencyDialog() {
     final name =
     TextEditingController(text: _emp?['emergency_contact_name']?.toString() ?? '');
@@ -1435,7 +1439,10 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     String relationship =
     (_emp?['emergency_contact_relationship'] ?? '').toString();
 
-    const relations = [
+    bool saving = false;
+
+    // The website takes free text here. Keep whatever is stored selectable, otherwise saving this form would blank it.
+    final relations = [
       "Father",
       "Mother",
       "Brother",
@@ -1444,9 +1451,13 @@ class _MyProfileScreenState extends State<MyProfileScreen>
       "Friend",
       "Guardian",
       "Other",
+      if (relationship.isNotEmpty &&
+          !const ["Father", "Mother", "Brother", "Sister", "Spouse", "Friend", "Guardian", "Other"]
+              .contains(relationship))
+        relationship,
     ];
 
-    showDialog(
+    _showEditDialog(
       context: context,
       builder: (context) {
         return StatefulBuilder(
@@ -1479,7 +1490,7 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                     TextField(
                       controller: phone,
                       keyboardType: TextInputType.phone,
-                      maxLength: 10,
+                      maxLength: 20,
                       decoration: const InputDecoration(
                           labelText: "Phone Number"),
                     ),
@@ -1491,18 +1502,28 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                     onPressed: () => Navigator.pop(context),
                     child: const Text("Cancel")),
                 ElevatedButton(
-                    onPressed: () async {
-                      if (phone.text.length != 10) {
-                        _snack("Enter valid mobile number");
-                        return;
-                      }
-                      Navigator.pop(context);
-                      await _updateProfile({
-                        'emergency_contact_name': name.text.trim(),
-                        'emergency_contact_relationship': relationship,
-                        'emergency_contact_number': phone.text.trim(),
-                      });
-                    },
+                    onPressed: saving
+                        ? null
+                        : () async {
+                            final updates = {
+                              'emergency_contact_name': name.text.trim(),
+                              'emergency_contact_relationship': relationship,
+                              'emergency_contact_number': phone.text.trim(),
+                            };
+                            final problem = profileFieldError(updates);
+                            if (problem != null) {
+                              _snack(problem);
+                              return;
+                            }
+                            setStateDialog(() => saving = true);
+                            final saved = await _updateProfile(updates);
+                            if (!context.mounted) return;
+                            if (saved) {
+                              Navigator.pop(context);
+                            } else {
+                              setStateDialog(() => saving = false);
+                            }
+                          },
                     child: const Text("Save")),
               ],
             );
@@ -1521,8 +1542,9 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     DateTime? dob = _emp?['date_of_birth'] != null
         ? DateTime.tryParse(_emp!['date_of_birth'].toString())
         : null;
+    bool saving = false;
 
-    showDialog(
+    _showEditDialog(
       context: context,
       builder: (context) {
         return StatefulBuilder(
@@ -1591,14 +1613,28 @@ class _MyProfileScreenState extends State<MyProfileScreen>
                     onPressed: () => Navigator.pop(context),
                     child: const Text("Cancel")),
                 ElevatedButton(
-                    onPressed: () async {
-                      Navigator.pop(context);
-                      await _updateProfile({
-                        'phone': phone.text.trim(),
-                        'date_of_birth':
-                        dob == null ? null : DateFormat('yyyy-MM-dd').format(dob!),
-                      });
-                    },
+                    onPressed: saving
+                        ? null
+                        : () async {
+                            final updates = {
+                              'phone': phone.text.trim(),
+                              'date_of_birth':
+                              dob == null ? null : DateFormat('yyyy-MM-dd').format(dob!),
+                            };
+                            final problem = profileFieldError(updates);
+                            if (problem != null) {
+                              _snack(problem);
+                              return;
+                            }
+                            setDialogState(() => saving = true);
+                            final saved = await _updateProfile(updates);
+                            if (!context.mounted) return;
+                            if (saved) {
+                              Navigator.pop(context);
+                            } else {
+                              setDialogState(() => saving = false);
+                            }
+                          },
                     child: const Text("Save")),
               ],
             );
@@ -1608,110 +1644,6 @@ class _MyProfileScreenState extends State<MyProfileScreen>
     ).then((_) {
       phone.dispose();
       email.dispose();
-    });
-  }
-
-  void _editWorkDialog() {
-    final department = TextEditingController(
-      text: _emp?['department']?.toString() ?? '',
-    );
-
-    final designation = TextEditingController(
-      text: _emp?['designation']?.toString() ?? '',
-    );
-
-    final grade = TextEditingController(
-      text: _emp?['grade_code']?.toString() ?? '',
-    );
-
-    final location = TextEditingController(
-      text: _emp?['location']?.toString() ?? '',
-    );
-
-    final status = TextEditingController(
-      text: _emp?['employment_status']?.toString() ?? '',
-    );
-
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text("Edit Work Information"),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: department,
-                decoration: const InputDecoration(
-                  labelText: "Department",
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              TextField(
-                controller: designation,
-                decoration: const InputDecoration(
-                  labelText: "Designation",
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              TextField(
-                controller: grade,
-                decoration: const InputDecoration(
-                  labelText: "Grade",
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              TextField(
-                controller: location,
-                decoration: const InputDecoration(
-                  labelText: "Location",
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              TextField(
-                controller: status,
-                decoration: const InputDecoration(
-                  labelText: "Employment Status",
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final updates = {
-                'department': department.text.trim(),
-                'designation': designation.text.trim(),
-                'grade_code': grade.text.trim(),
-                'location': location.text.trim(),
-                'employment_status': status.text.trim(),
-              };
-
-              Navigator.pop(context);
-
-              if (!mounted) return;
-
-              await _updateProfile(updates);
-            },
-            child: const Text("Save"),
-          ),
-        ],
-      ),
-    ).then((_) {
-      department.dispose();
-      designation.dispose();
-      grade.dispose();
-      location.dispose();
-      status.dispose();
     });
   }
 
@@ -1772,10 +1704,10 @@ class _MyProfileScreenState extends State<MyProfileScreen>
         CircleAvatar(
             radius: 40,
             backgroundColor: Colors.blue.shade100,
-            backgroundImage: _emp?['avatar_url'] != null
-                ? CachedNetworkImageProvider(_emp!['avatar_url'])
+            backgroundImage: _avatar != null
+                ? CachedNetworkImageProvider(_avatar!)
                 : null,
-            child: _emp?['avatar_url'] == null
+            child: _avatar == null
                 ? Text(_emp?['full_name']?[0] ?? '')
                 : null),
         const SizedBox(height: 16),

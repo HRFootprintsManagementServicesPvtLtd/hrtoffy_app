@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import '../core/api/json_case.dart';
+import '../repositories/overtime_repository.dart';
 import '../widgets/skeleton_layouts.dart';
 import '../widgets/app_drawer.dart';
 import 'dashboard_screen.dart';
@@ -18,11 +19,15 @@ class OvertimeScreen extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
 
+  /// Overridable for tests; defaults to the signed-in session.
+  final OvertimeRepository? repository;
+
   const OvertimeScreen({
     Key? key,
     required this.email,
     required this.userData,
     required this.fetchHrmsContext,
+    this.repository,
   }) : super(key: key);
 
   @override
@@ -30,7 +35,8 @@ class OvertimeScreen extends StatefulWidget {
 }
 
 class _OvertimeScreenState extends State<OvertimeScreen> {
-  final supabase = Supabase.instance.client;
+  late final OvertimeRepository _overtime =
+      widget.repository ?? OvertimeRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _bottomTabIndex = 0;
   String? employeeUuid;
@@ -46,31 +52,50 @@ class _OvertimeScreenState extends State<OvertimeScreen> {
   Future<void> _initUser() async {
     setState(() => loading = true);
     try {
-      final profile = await supabase.from('employee_records').select('id').eq('email', widget.email).maybeSingle();
-      if (profile != null) {
-        employeeUuid = profile['id'];
-        await fetchOTRecords();
-      }
-    } catch (e) {
-      debugPrint('Error: $e');
+      employeeUuid = _overtime.employeeId;
+      await fetchOTRecords();
+    } catch (_) {
+      debugPrint('Overtime init failed');
     }
-    setState(() => loading = false);
+    if (mounted) setState(() => loading = false);
   }
 
   Future<void> fetchOTRecords() async {
     try {
-      final res = await supabase.from('overtime_records').select().eq('employee_id', employeeUuid!).order('ot_date', ascending: false);
-      otRecords = List<Map<String, dynamic>>.from(res);
-    } catch (e) {
+      otRecords = await _overtime.records();
+    } catch (_) {
+      // A failed load shows the empty state, as before (nothing about the request is surfaced).
+      debugPrint('Overtime load failed');
       otRecords = [];
     }
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   Widget _circleIconBtn({required String icon, required VoidCallback onTap}) {
     return Container(
-      decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))]),
-      child: IconButton(icon: SvgPicture.asset(icon, width: 20, height: 20, colorFilter: const ColorFilter.mode(EmployeeUi.primary, BlendMode.srcIn)), onPressed: onTap),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: IconButton(
+        icon: SvgPicture.asset(
+          icon,
+          width: 20,
+          height: 20,
+          colorFilter: const ColorFilter.mode(
+            EmployeeUi.primary,
+            BlendMode.srcIn,
+          ),
+        ),
+        onPressed: onTap,
+      ),
     );
   }
 
@@ -101,16 +126,33 @@ class _OvertimeScreenState extends State<OvertimeScreen> {
                 child: _circleIconBtn(
                   icon: "assets/icons/notification.svg",
                   onTap: () {
-                    final empId = (widget.userData['id'] ?? widget.userData['employee_id'])?.toString() ?? '';
+                    final empId =
+                        (widget.userData['id'] ??
+                                widget.userData['employee_id'])
+                            ?.toString() ??
+                        '';
                     if (empId.isNotEmpty) {
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => NotificationsScreen(employeeId: empId, userEmail: widget.email, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext)));
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => NotificationsScreen(
+                            employeeId: empId,
+                            userEmail: widget.email,
+                            userData: widget.userData,
+                            fetchHrmsContext: widget.fetchHrmsContext,
+                          ),
+                        ),
+                      );
                     }
                   },
                 ),
               ),
               Padding(
                 padding: const EdgeInsets.only(right: 16, top: 12),
-                child: _circleIconBtn(icon: "assets/icons/menu.svg", onTap: () => _scaffoldKey.currentState?.openEndDrawer()),
+                child: _circleIconBtn(
+                  icon: "assets/icons/menu.svg",
+                  onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
+                ),
               ),
               const SizedBox(width: 1),
             ],
@@ -130,7 +172,14 @@ class _OvertimeScreenState extends State<OvertimeScreen> {
                   children: [
                     Text("Overtime", style: EmployeeUi.header(24)),
                     const SizedBox(height: 4),
-                    Text("Track your extra working hours", style: GoogleFonts.montserrat(fontSize: 12, color: EmployeeUi.muted, fontWeight: FontWeight.w500)),
+                    Text(
+                      "Track your extra working hours",
+                      style: GoogleFonts.montserrat(
+                        fontSize: 12,
+                        color: EmployeeUi.muted,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -148,14 +197,30 @@ class _OvertimeScreenState extends State<OvertimeScreen> {
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                SvgPicture.asset("assets/icons/overtime.svg", width: 100, colorFilter: const ColorFilter.mode(Colors.blueGrey, BlendMode.srcIn)),
+                                SvgPicture.asset(
+                                  "assets/icons/overtime.svg",
+                                  width: 100,
+                                  colorFilter: const ColorFilter.mode(
+                                    Colors.blueGrey,
+                                    BlendMode.srcIn,
+                                  ),
+                                ),
                                 const SizedBox(height: 20),
-                                Text("No overtime records found", style: GoogleFonts.montserrat(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black54)),
+                                Text(
+                                  "No overtime records found",
+                                  style: GoogleFonts.montserrat(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black54,
+                                  ),
+                                ),
                               ],
                             ),
                           )
                         : Column(
-                            children: otRecords.map((r) => _buildOTCard(r)).toList(),
+                            children: otRecords
+                                .map((r) => _buildOTCard(r))
+                                .toList(),
                           ),
                   ),
           ),
@@ -172,30 +237,120 @@ class _OvertimeScreenState extends State<OvertimeScreen> {
         showSelectedLabels: true,
         showUnselectedLabels: true,
         onTap: (index) {
-          if (index == 0) { Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DashboardScreen(email: widget.email, employeeId: employeeUuid ?? ''))); return; }
-          if (index == 1) { Navigator.push(context, MaterialPageRoute(builder: (_) => LeavesScreen(email: widget.email, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
-          if (index == 2) { Navigator.push(context, MaterialPageRoute(builder: (_) => TimeAttendanceScreen(userEmail: widget.email, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
-          if (index == 3) { Navigator.push(context, MaterialPageRoute(builder: (_) => PayslipScreen(userEmail: widget.email, userData: widget.userData, fetchHrmsContext: widget.fetchHrmsContext))); return; }
-          if (index == 4) { _scaffoldKey.currentState?.openEndDrawer(); return; }
+          if (index == 0) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => DashboardScreen(
+                  email: widget.email,
+                  employeeId: employeeUuid ?? '',
+                ),
+              ),
+            );
+            return;
+          }
+          if (index == 1) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => LeavesScreen(
+                  email: widget.email,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext,
+                ),
+              ),
+            );
+            return;
+          }
+          if (index == 2) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => TimeAttendanceScreen(
+                  userEmail: widget.email,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext,
+                ),
+              ),
+            );
+            return;
+          }
+          if (index == 3) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => PayslipScreen(
+                  userEmail: widget.email,
+                  userData: widget.userData,
+                  fetchHrmsContext: widget.fetchHrmsContext,
+                ),
+              ),
+            );
+            return;
+          }
+          if (index == 4) {
+            _scaffoldKey.currentState?.openEndDrawer();
+            return;
+          }
         },
         items: [
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/dashboard.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Dashboard'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/leaves.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Leave'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/attendance.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Attendance'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/payroll.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'Payslip'),
-          BottomNavigationBarItem(icon: SvgPicture.asset("assets/icons/menu.svg", width: 22, colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn)), label: 'More'),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/dashboard.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Dashboard',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/leaves.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Leave',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/attendance.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Attendance',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/payroll.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'Payslip',
+          ),
+          BottomNavigationBarItem(
+            icon: SvgPicture.asset(
+              "assets/icons/menu.svg",
+              width: 22,
+              colorFilter: const ColorFilter.mode(Colors.grey, BlendMode.srcIn),
+            ),
+            label: 'More',
+          ),
         ],
       ),
     );
   }
 
   Widget _buildOTCard(Map<String, dynamic> r) {
-    final date = DateFormat('dd MMM yyyy').format(DateTime.parse(r['ot_date']));
+    final date = DateFormat(
+      'dd MMM yyyy',
+    ).format(DateTime.parse(asDateOnly(r['ot_date']) ?? ''));
     final status = (r['status'] ?? '').toString().toLowerCase();
     Color statusColor = Colors.grey;
-    if (status == 'approved' || status == 'paid') statusColor = Colors.green;
-    else if (status == 'pending') statusColor = Colors.orange;
-    else if (status == 'rejected') statusColor = Colors.red;
+    if (status == 'approved' || status == 'paid')
+      statusColor = Colors.green;
+    else if (status == 'pending')
+      statusColor = Colors.orange;
+    else if (status == 'rejected')
+      statusColor = Colors.red;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -209,9 +364,22 @@ class _OvertimeScreenState extends State<OvertimeScreen> {
             children: [
               Text(date, style: EmployeeUi.title(15)),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                child: Text(status.toUpperCase(), style: GoogleFonts.montserrat(fontSize: 10, fontWeight: FontWeight.bold, color: statusColor)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  status.toUpperCase(),
+                  style: GoogleFonts.montserrat(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: statusColor,
+                  ),
+                ),
               ),
             ],
           ),
@@ -225,7 +393,14 @@ class _OvertimeScreenState extends State<OvertimeScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          Text("Type: ${r['ot_type']?.toString().replaceAll('_', ' ').toUpperCase()}", style: GoogleFonts.montserrat(fontSize: 12, color: Colors.black54, fontWeight: FontWeight.w600)),
+          Text(
+            "Type: ${r['ot_type']?.toString().replaceAll('_', ' ').toUpperCase()}",
+            style: GoogleFonts.montserrat(
+              fontSize: 12,
+              color: Colors.black54,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
@@ -235,9 +410,23 @@ class _OvertimeScreenState extends State<OvertimeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: GoogleFonts.montserrat(fontSize: 11, color: Colors.black38, fontWeight: FontWeight.bold)),
+        Text(
+          label,
+          style: GoogleFonts.montserrat(
+            fontSize: 11,
+            color: Colors.black38,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
         const SizedBox(height: 4),
-        Text(value, style: GoogleFonts.montserrat(fontSize: 14, fontWeight: FontWeight.w700, color: Colors.black87)),
+        Text(
+          value,
+          style: GoogleFonts.montserrat(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: Colors.black87,
+          ),
+        ),
       ],
     );
   }

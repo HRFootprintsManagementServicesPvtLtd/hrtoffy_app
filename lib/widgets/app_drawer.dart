@@ -23,6 +23,8 @@ import '../screens/goals_screen.dart';
 import '../screens/messages_screen.dart';
 import 'package:provider/provider.dart';
 import '../providers/role_provider.dart';
+import '../core/manager_access.dart';
+import '../screens/manager/manager_unavailable_screen.dart';
 import '../screens/manager/manager_dashboard_screen.dart';
 import 'employee_ui.dart';
 
@@ -396,18 +398,25 @@ class _AppDrawerState extends State<AppDrawer> {
                       Navigator.pop(context);
 
                       if (currentRole == 'employee') {
+                        if (!ManagerAccess.available) {
+                          // Manager screens are unavailable (no verified manager APIs yet). No role switch, no navigation.
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text(ManagerUnavailableScreen.message)),
+                          );
+                          return;
+                        }
                         roleProvider.switchRole('manager');
 
                         Navigator.pushReplacement(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => ManagerDashboardScreen(
+                            builder: (_) => managerScreen(() => ManagerDashboardScreen(
                               userEmail: widget.userEmail,
 
                               userData: widget.userData,
 
                               fetchHrmsContext: widget.fetchHrmsContext,
-                            ),
+                            )),
                           ),
                         );
                       } else {

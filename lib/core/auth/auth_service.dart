@@ -25,7 +25,7 @@ class AuthFlowException implements Exception {
 class MultipleOrganizationsException extends AuthFlowException {
   final List<AuthOrganization> organizations;
   const MultipleOrganizationsException(this.organizations)
-      : super('Multiple organizations found; choose one');
+    : super('Multiple organizations found; choose one');
 }
 
 /// Authenticated user information exposed to the app.
@@ -58,15 +58,15 @@ class AuthUser {
 }
 
 /// Email/password authentication against the HR Toffy AWS backend
-/// (`/auth/*`). Does not use Supabase Auth.
+/// (`/auth/*`). The session is the backend's own: there is no third-party auth SDK.
 class AuthService extends ChangeNotifier {
   /// Pass the same [tokenStore] that [api] was built with when supplying both.
   AuthService({ApiClient? api, TokenStore? tokenStore})
-      : this._(tokenStore ?? TokenStore(), api);
+    : this._(tokenStore ?? TokenStore(), api);
 
   AuthService._(TokenStore tokens, ApiClient? api)
-      : _tokens = tokens,
-        _api = api ?? ApiClient(tokenStore: tokens) {
+    : _tokens = tokens,
+      _api = api ?? ApiClient(tokenStore: tokens) {
     _expiredSub = _api.onSessionExpired.listen((_) {
       _user = null;
       notifyListeners();
@@ -78,7 +78,10 @@ class AuthService extends ChangeNotifier {
 
   static AuthService _createDefault() {
     final store = TokenStore();
-    return AuthService(api: ApiClient(tokenStore: store), tokenStore: store);
+    return AuthService(
+      api: ApiClient(tokenStore: store),
+      tokenStore: store,
+    );
   }
 
   final TokenStore _tokens;
@@ -98,7 +101,8 @@ class AuthService extends ChangeNotifier {
   /// repositories so a missing session surfaces like any other auth failure.
   AuthUser requireUser() {
     final u = _user;
-    if (u == null) throw const ApiException(401, 'Not signed in', code: 'UNAUTHORIZED');
+    if (u == null)
+      throw const ApiException(401, 'Not signed in', code: 'UNAUTHORIZED');
     return u;
   }
 
@@ -131,23 +135,29 @@ class AuthService extends ChangeNotifier {
       },
     );
 
-    if (data is! Map || data['accessToken'] is! String || data['refreshToken'] is! String) {
+    if (data is! Map ||
+        data['accessToken'] is! String ||
+        data['refreshToken'] is! String) {
       throw const AuthFlowException('Unexpected login response');
     }
 
     final user = data['user'];
     final expiresIn = _asInt(data['expiresIn']);
-    await _tokens.save(StoredSession(
-      accessToken: data['accessToken'] as String,
-      refreshToken: data['refreshToken'] as String,
-      sessionId: data['sessionId']?.toString(),
-      expiresAt: expiresIn == null
-          ? null
-          : DateTime.now().add(Duration(seconds: expiresIn)),
-      userId: user is Map ? user['id']?.toString() : null,
-      email: user is Map ? (user['email']?.toString() ?? cleanEmail) : cleanEmail,
-      organizationId: orgId,
-    ));
+    await _tokens.save(
+      StoredSession(
+        accessToken: data['accessToken'] as String,
+        refreshToken: data['refreshToken'] as String,
+        sessionId: data['sessionId']?.toString(),
+        expiresAt: expiresIn == null
+            ? null
+            : DateTime.now().add(Duration(seconds: expiresIn)),
+        userId: user is Map ? user['id']?.toString() : null,
+        email: user is Map
+            ? (user['email']?.toString() ?? cleanEmail)
+            : cleanEmail,
+        organizationId: orgId,
+      ),
+    );
 
     try {
       return await _resolveAndStoreUser();
@@ -238,6 +248,38 @@ class AuthService extends ChangeNotifier {
     return ok;
   }
 
+  // -------------------------------------------------------- password reset
+
+  /// `POST /auth/password-reset/request-otp` - emails a 6-digit OTP when the address is registered.
+  /// The server answers the same way whether or not it is, so callers must not infer anything from success.
+  /// Unauthenticated: no bearer token is sent.
+  Future<void> requestPasswordResetOtp(String email) async {
+    await _api.post(
+      '/auth/password-reset/request-otp',
+      auth: false,
+      body: {'email': email.trim()},
+    );
+  }
+
+  /// `POST /auth/password-reset/verify-otp` - checks the OTP and sets the new password.
+  /// Throws [ApiException] (400) for a wrong/expired OTP or a password the server refuses.
+  /// Unauthenticated: no bearer token is sent.
+  Future<void> confirmPasswordResetOtp({
+    required String email,
+    required String otp,
+    required String newPassword,
+  }) async {
+    await _api.post(
+      '/auth/password-reset/verify-otp',
+      auth: false,
+      body: {
+        'email': email.trim(),
+        'otp': otp.trim(),
+        'newPassword': newPassword,
+      },
+    );
+  }
+
   /// Revokes the session on the server (best effort) and clears local state.
   Future<void> logout() async {
     try {
@@ -286,7 +328,9 @@ class AuthService extends ChangeNotifier {
       }
     }
     if (employeeId == null &&
-        (orgs is! List || orgs.isEmpty || data['organizationId']?.toString() == orgId)) {
+        (orgs is! List ||
+            orgs.isEmpty ||
+            data['organizationId']?.toString() == orgId)) {
       employeeId = _nonEmpty(data['employeeId']);
       empRole ??= _nonEmpty(data['empRole']);
       isHr = isHr || data['isHrRole'] == true;
@@ -300,12 +344,14 @@ class AuthService extends ChangeNotifier {
     }
 
     if (stored != null) {
-      await _tokens.save(stored.copyWith(
-        userId: userId,
-        email: email,
-        organizationId: orgId,
-        employeeId: employeeId,
-      ));
+      await _tokens.save(
+        stored.copyWith(
+          userId: userId,
+          email: email,
+          organizationId: orgId,
+          employeeId: employeeId,
+        ),
+      );
     }
 
     _user = AuthUser(

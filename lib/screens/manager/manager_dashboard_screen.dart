@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../repositories/employee_repository.dart';
+import '../../repositories/engagement_repository.dart';
+import '../../repositories/manager_repository.dart';
+import '../../repositories/organization_repository.dart';
 import '../../widgets/manager_drawer.dart';
 import '../../widgets/drawer_route.dart';
 
@@ -15,16 +17,31 @@ import 'widgets/team_attendance_section.dart';
 import 'widgets/team_members_list.dart';
 import 'widgets/team_tabs.dart';
 
+/// Shown in place of a section whose data could not be loaded (never as an empty list or a zero).
+const String kTeamDataUnavailableMessage = "Team data isn't available yet.";
+
+/// How many attendance rows the dashboard lists (the newest first, over the last [_attendanceDays] days).
+const int _attendanceRows = 50;
+const int _attendanceDays = 30;
+
 class ManagerDashboardScreen extends StatefulWidget {
   final String userEmail;
   final Map<String, dynamic>? userData;
   final Future<Map<String, dynamic>> Function()? fetchHrmsContext;
+  final EmployeeRepository? employeeRepository;
+  final OrganizationRepository? organizationRepository;
+  final EngagementRepository? engagementRepository;
+  final ManagerRepository? managerRepository;
 
   const ManagerDashboardScreen({
     super.key,
     required this.userEmail,
     this.userData,
     this.fetchHrmsContext,
+    this.employeeRepository,
+    this.organizationRepository,
+    this.engagementRepository,
+    this.managerRepository,
   });
 
   @override
@@ -32,29 +49,40 @@ class ManagerDashboardScreen extends StatefulWidget {
 }
 
 class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
-  final supabase = Supabase.instance.client;
+  late final EmployeeRepository _employees =
+      widget.employeeRepository ?? EmployeeRepository();
+  late final OrganizationRepository _orgs =
+      widget.organizationRepository ?? OrganizationRepository();
+  late final EngagementRepository _engagement =
+      widget.engagementRepository ?? EngagementRepository();
+  late final ManagerRepository _manager =
+      widget.managerRepository ?? ManagerRepository();
+
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   bool loading = true;
+  String? loadError;
   String selectedTab = 'all';
   bool showTeamMembers = true;
   bool showAttendance = true;
 
   Map<String, dynamic>? employee;
-  List<dynamic> allMembers = [];
-  List<dynamic> filteredMembers = [];
-  List<dynamic> directMembers = [];
-  List<dynamic> secondaryMembers = [];
-  List<dynamic> indirectMembers = [];
-  List<dynamic> reviewMembers = [];
 
-  List<dynamic> attendance = [];
-  List<dynamic> birthdays = [];
-  
-  int announcementsCount = 0;
-  int eventsCount = 0;
-  int surveysCount = 0;
-  int onLeaveCount = 0;
+  /// Null while loading or when that part could not be loaded (then its section says so).
+  ManagerTeam? team;
+  bool teamFailed = false;
+  List<Map<String, dynamic>>? attendance;
+  bool attendanceFailed = false;
+  List<Map<String, dynamic>>? birthdays;
+  bool birthdaysFailed = false;
+
+  /// People of the team on approved leave today; null while loading or when it could not be loaded ("-", never 0).
+  int? onLeaveCount;
+
+  /// Null while unknown or when that list could not be loaded: shown as "unavailable", never as 0.
+  int? announcementsCount;
+  int? eventsCount;
+  int? surveysCount;
   String? companyLogoUrl;
   String? organizationName;
 
@@ -65,186 +93,281 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   }
 
   Future<void> loadDashboard() async {
-    try {
-      final currentUser = supabase.auth.currentUser;
-      if (currentUser == null) return;
-
-      // Restore original column set with essential ID fields for filtering
-      const String memberColumns = 'id, employee_id, full_name, designation, employment_status, department, email, manager_name, avatar_url, manager_id, secondary_manager_id, reviewer_id';
-
-      debugPrint("ManagerDashboard: Step 1 - Fetching manager profile...");
-      // 1. Fetch Manager Profile with full fields for SnapshotSection
-      final employeeRecord = await supabase
-          .from('employee_records')
-          .select('id, organization_id, full_name, avatar_url, designation, department, manager_name, reviewer_name, location,  employee_id, email')
-          .eq('email', currentUser.email!)
-          .maybeSingle();
-      
-      if (employeeRecord == null) {
-        debugPrint("ManagerDashboard: Profile not found.");
-        if (mounted) setState(() => loading = false);
-        return;
-      }
-      debugPrint("ManagerDashboard: Profile fetched for ${employeeRecord['full_name']}.");
-
-      if (!mounted) return;
-      setState(() => employee = employeeRecord);
-
-      final managerId = employeeRecord['id'];
-      final orgId = employeeRecord['organization_id'];
-
-      debugPrint("ManagerDashboard: Step 2 - Fetching team segments...");
-      // 2. Fetch all direct/secondary/review team segments in one query using OR
-      final teamRes = await supabase
-          .from('employee_records')
-          .select(memberColumns)
-          .or('manager_id.eq.$managerId,secondary_manager_id.eq.$managerId,reviewer_id.eq.$managerId');
-      
-      debugPrint("ManagerDashboard: Team segments fetched: ${teamRes.length} records.");
-
-      directMembers = teamRes.where((m) => m['manager_id']?.toString() == managerId.toString()).toList();
-      secondaryMembers = teamRes.where((m) => m['secondary_manager_id']?.toString() == managerId.toString()).toList();
-      reviewMembers = teamRes.where((m) => m['reviewer_id']?.toString() == managerId.toString()).toList();
-
-      // Filter Review Members (remove if already in direct/secondary)
-      final directIds = {...directMembers.map((e) => e['id']), ...secondaryMembers.map((e) => e['id'])};
-      reviewMembers = reviewMembers.where((e) => !directIds.contains(e['id'])).toList();
-
-      // 3. Fetch Indirect Members
-      if (directIds.isNotEmpty) {
-        debugPrint("ManagerDashboard: Step 3 - Fetching indirect members for ${directIds.length} direct reports...");
-        // Optimization: limit count of IDs in filter if extremely large, but keep functionality
-        indirectMembers = await supabase
-            .from('employee_records')
-            .select(memberColumns)
-            .inFilter('manager_id', directIds.toList());
-        
-        // Remove duplicates from indirect
-        indirectMembers = indirectMembers.where((e) => !directIds.contains(e['id'])).toList();
-        debugPrint("ManagerDashboard: Indirect members fetched: ${indirectMembers.length} records.");
-      }
-
-      // Combine All Unique Members
-      final addedIds = <dynamic>{};
-      final uniqueMembers = <Map<String, dynamic>>[];
-      for (final m in [...directMembers, ...secondaryMembers, ...indirectMembers, ...reviewMembers]) {
-        if (!addedIds.contains(m['id'])) {
-          addedIds.add(m['id']);
-          uniqueMembers.add(m);
-        }
-      }
-      allMembers = uniqueMembers;
-      filteredMembers = allMembers;
-
-      debugPrint("ManagerDashboard: Initial data loaded. Passing to progressive loader...");
-      if (mounted) setState(() => loading = false);
-
-      // 6. Background Load remaining metrics and organization data
-      _loadSecondaryData(addedIds, orgId);
-
-    } catch (e) {
-      debugPrint('Manager Dashboard Critical Error: $e');
-      if (mounted) setState(() => loading = false);
+    if (mounted) {
+      setState(() {
+        loading = true;
+        loadError = null;
+      });
     }
-  }
-
-  Future<void> _loadSecondaryData(Set<dynamic> addedIds, dynamic orgId) async {
     try {
-      final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-
-      debugPrint("ManagerDashboard: Progressive Step 4 - Fetching attendance and engagement...");
-      
-      // OPTIMIZATION: Only fetch attendance if addedIds is not massive, otherwise limit or batch
-      // For now, restoring original logic with a safety limit to prevent timeout
-      final parallelResults = await Future.wait([
-        // Attendance logs
-        addedIds.isNotEmpty 
-          ? supabase.from('attendance').select('id, date, status, punch_in_time, punch_out_time, employee_id, employee_records!employee_id(full_name)').inFilter('employee_id', addedIds.toList()).order('date', ascending: false).limit(50)
-          : Future.value([]),
-        // On Leave Count
-        addedIds.isNotEmpty
-          ? supabase.from('leave_applications').select('id').eq('status', 'approved').lte('from_date', todayStr).gte('to_date', todayStr).inFilter('employee_id', addedIds.toList())
-          : Future.value([]),
-        // Engagement
-        supabase.from('announcements').select('id').eq('organization_id', orgId).eq('is_active', true),
-        supabase.from('events').select('id').eq('organization_id', orgId),
-        supabase.from('surveys').select('id').eq('organization_id', orgId).eq('status', 'active'),
-      ]);
-
+      final me = await _employees.getMe();
+      if (me.isEmpty) throw StateError('no employee record');
+      employee = me;
+    } catch (_) {
+      // The server's text is never shown.
       if (!mounted) return;
       setState(() {
-        attendance = parallelResults[0];
-        onLeaveCount = parallelResults[1].length;
-        announcementsCount = parallelResults[2].length;
-        eventsCount = parallelResults[3].length;
-        surveysCount = parallelResults[4].length;
+        loading = false;
+        loadError = "Couldn't load your profile. Pull down to try again.";
       });
-      debugPrint("ManagerDashboard: Attendance/Engagement data populated.");
+      return;
+    }
+    if (!mounted) return;
+    setState(() => loading = false);
 
-      debugPrint("ManagerDashboard: Progressive Step 5 - Fetching org details and birthdays...");
-      // Organization details
-      final orgRes = await supabase.from('organizations').select('name, logo_url').eq('id', orgId).maybeSingle();
-      if (orgRes != null && mounted) {
-        setState(() {
-          organizationName = orgRes['name'];
-          companyLogoUrl = orgRes['logo_url'];
-        });
+    // Everything below is optional: a failure leaves that part "unavailable" and nothing else is affected.
+    await Future.wait([
+      _loadOrganization(),
+      _loadEngagement(),
+      _loadTeam(),
+      _loadBirthdays(),
+      _loadOnLeave(),
+    ]);
+  }
+
+  Future<void> _loadOrganization() async {
+    try {
+      final org = await _orgs.getOrganization();
+      if (!mounted) return;
+      setState(() {
+        organizationName = org['name']?.toString();
+        companyLogoUrl = org['logo_url']?.toString();
+        if (organizationName != null)
+          employee = {...?employee, 'organization_name': organizationName};
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _loadEngagement() async {
+    Future<int?> count(
+      Future<List<Map<String, dynamic>>> Function() load,
+    ) async {
+      try {
+        return (await load()).length;
+      } catch (_) {
+        return null;
       }
+    }
 
-      // Birthdays (Only active employees with DOB set) - This was the primary cause of 57014 timeout
-      // FIXED: Added active filter and limit
-      final monthDay = DateFormat('MM-dd').format(DateTime.now());
-      final birthdayEmps = await supabase
-          .from('employee_records')
-          .select('id, full_name, date_of_birth, avatar_url')
-          .eq('organization_id', orgId)
-          .not('date_of_birth', 'is', null)
-          .eq('employment_status', 'active')
-          .limit(200); 
-      
-      final filteredBirthdays = birthdayEmps.where((e) {
-        final dob = e['date_of_birth']?.toString() ?? '';
-        return dob.contains(monthDay);
-      }).toList();
+    final results = await Future.wait([
+      count(_engagement.announcements),
+      count(_engagement.events),
+      count(_engagement.activeSurveys),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      announcementsCount = results[0];
+      eventsCount = results[1];
+      surveysCount = results[2];
+    });
+  }
 
-      if (mounted) {
-        setState(() => birthdays = filteredBirthdays);
-      }
-      debugPrint("ManagerDashboard: Background data fully loaded.");
-
-    } catch (e) {
-      debugPrint("ManagerDashboard Progressive Load Error: $e");
+  Future<void> _loadTeam() async {
+    ManagerTeam loaded;
+    try {
+      loaded = await _manager.team();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        teamFailed = true;
+        attendanceFailed = true;
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      team = loaded;
+      teamFailed = false;
+    });
+    try {
+      final to = DateTime.now();
+      final rows = await _manager.teamAttendance(
+        loaded.treeIds,
+        from: to.subtract(const Duration(days: _attendanceDays)),
+        to: to,
+      );
+      if (!mounted) return;
+      setState(() {
+        attendance = rows.take(_attendanceRows).toList();
+        attendanceFailed = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => attendanceFailed = true);
     }
   }
 
-  void filterMembers(String type) {
-    if (!mounted) return;
-    setState(() {
-      selectedTab = type;
-      if (type == 'all') {
-        filteredMembers = allMembers;
-      } else if (type == 'direct') {
-        filteredMembers = [...directMembers, ...secondaryMembers];
-      } else if (type == 'indirect') {
-        filteredMembers = indirectMembers;
-      } else if (type == 'reviewer') {
-        filteredMembers = reviewMembers;
-      }
-    });
+  Future<void> _loadOnLeave() async {
+    try {
+      final n = await _manager.onLeaveCount();
+      if (!mounted) return;
+      setState(() => onLeaveCount = n);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => onLeaveCount = null);
+    }
   }
-  
-  Widget _buildLegendItem(Color color, String label) {
+
+  Future<void> _loadBirthdays() async {
+    try {
+      final list = await _manager.birthdaysToday();
+      if (!mounted) return;
+      setState(() {
+        birthdays = list;
+        birthdaysFailed = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => birthdaysFailed = true);
+    }
+  }
+
+  List<Map<String, dynamic>> get _filteredMembers {
+    final t = team;
+    if (t == null) return const [];
+    switch (selectedTab) {
+      case 'direct':
+        return t.direct;
+      case 'indirect':
+        return t.indirect;
+      case 'reviewer':
+        return t.reviewees;
+      default:
+        return t.all;
+    }
+  }
+
+  Widget _unavailableCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline_rounded, color: Colors.orange[700]),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              kTeamDataUnavailableMessage,
+              style: GoogleFonts.montserrat(
+                fontSize: 14,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _loadingCard() => const Padding(
+    padding: EdgeInsets.all(24),
+    child: Center(child: CircularProgressIndicator()),
+  );
+
+  Widget _sectionHeader(String title, bool open, VoidCallback toggle) {
     return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        Expanded(
+          child: Text(
+            title,
+            style: GoogleFonts.montserrat(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ),
-        const SizedBox(width: 6),
-        Text(label, style: GoogleFonts.montserrat(fontSize: 11, color: Colors.black87, fontWeight: FontWeight.w500)),
+        IconButton(
+          onPressed: toggle,
+          icon: Icon(
+            open ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+            size: 28,
+          ),
+        ),
       ],
     );
+  }
+
+  Widget _sectionTitle(String title) => Text(
+    title,
+    style: GoogleFonts.montserrat(fontSize: 18, fontWeight: FontWeight.bold),
+  );
+
+  Widget _teamSection() {
+    final t = team;
+    if (teamFailed) return _unavailableCard();
+    if (t == null) return _loadingCard();
+    final members = _filteredMembers;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ManagerKpiCards(
+          directReports: t.direct.length,
+          indirectReports: t.indirect.length,
+          reviewCount: t.reviewees.length,
+          onLeaveCount: onLeaveCount, // "-" until the server answers, never 0
+        ),
+        const SizedBox(height: 28),
+        TeamTabs(
+          selected: selectedTab,
+          onChanged: (v) => setState(() => selectedTab = v),
+          allCount: t.all.length,
+          directCount: t.direct.length,
+          indirectCount: t.indirect.length,
+          reviewCount: t.reviewees.length,
+        ),
+        const SizedBox(height: 12),
+        _sectionHeader(
+          'All Team Members (${members.length})',
+          showTeamMembers,
+          () => setState(() => showTeamMembers = !showTeamMembers),
+        ),
+        if (showTeamMembers) TeamMembersList(members: members),
+      ],
+    );
+  }
+
+  Widget _attendanceSection() {
+    if (attendanceFailed) return _unavailableCard();
+    if (attendance == null)
+      return teamFailed ? _unavailableCard() : _loadingCard();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader(
+          'Team Attendance (Last 30 Days)',
+          showAttendance,
+          () => setState(() => showAttendance = !showAttendance),
+        ),
+        if (showAttendance) TeamAttendanceSection(attendance: attendance!),
+      ],
+    );
+  }
+
+  Widget _celebrationsSection() {
+    final titled = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('Celebrations Today'),
+        const SizedBox(height: 12),
+      ],
+    );
+    if (birthdaysFailed)
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [...titled.children, _unavailableCard()],
+      );
+    if (birthdays == null)
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [...titled.children, _loadingCard()],
+      );
+    return CelebrationsSection(birthdays: birthdays!);
   }
 
   @override
@@ -276,104 +399,76 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: loadDashboard,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    ManagerHeader(employeeName: employee?['full_name'] ?? 'Manager'),
-                    const SizedBox(height: 24),
-                    // My Team Section
-                    Text(
-                      "My Team",
-                      style: GoogleFonts.montserrat(fontSize: 22, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      "Manage and track your team members",
-                      style: GoogleFonts.montserrat(fontSize: 14, color: Colors.grey[600]),
-                    ),
-                    const SizedBox(height: 20),
-                    
-                    Row(
+              child: loadError != null
+                  ? ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.all(28),
                       children: [
-                        Text("Legend: ", style: GoogleFonts.montserrat(fontSize: 12, color: Colors.grey)),
-                        _buildLegendItem(Colors.blueAccent, "Direct Report"),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    ManagerKpiCards(
-                      directReports: directMembers.length + secondaryMembers.length,
-                      indirectReports: indirectMembers.length,
-                      reviewCount: reviewMembers.length,
-                      onLeaveCount: onLeaveCount,
-                    ),
-                    const SizedBox(height: 28),
-                    TeamTabs(
-                      selected: selectedTab,
-                      onChanged: filterMembers,
-                      allCount: allMembers.length,
-                      directCount: directMembers.length + secondaryMembers.length,
-                      indirectCount: indirectMembers.length,
-                      reviewCount: reviewMembers.length,
-                    ),
-                    const SizedBox(height: 12),
-                    
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
+                        const SizedBox(height: 80),
                         Text(
-                          "All Team Members (${filteredMembers.length})",
-                          style: GoogleFonts.montserrat(fontSize: 18, fontWeight: FontWeight.bold),
+                          loadError!,
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.montserrat(color: Colors.red[700]),
                         ),
-                        IconButton(
-                          onPressed: () => setState(() => showTeamMembers = !showTeamMembers),
-                          icon: Icon(showTeamMembers ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, size: 28),
-                        ),
-                      ],
-                    ),
-                    if (showTeamMembers) TeamMembersList(members: filteredMembers),
-                    
-                    const SizedBox(height: 40),
-                    
-                    // Attendance Section
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          "Team Attendance (Last 30 Days)",
-                          style: GoogleFonts.montserrat(fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
-                        IconButton(
-                          onPressed: () => setState(() => showAttendance = !showAttendance),
-                          icon: Icon(showAttendance ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, size: 28),
+                        const SizedBox(height: 12),
+                        Center(
+                          child: TextButton(
+                            onPressed: loadDashboard,
+                            child: const Text('Retry'),
+                          ),
                         ),
                       ],
+                    )
+                  : SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 24,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ManagerHeader(
+                            employeeName: employee?['full_name'] ?? 'Manager',
+                          ),
+                          const SizedBox(height: 24),
+                          Text(
+                            "My Team",
+                            style: GoogleFonts.montserrat(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            "Manage and track your team members",
+                            style: GoogleFonts.montserrat(
+                              fontSize: 14,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          _teamSection(),
+                          const SizedBox(height: 40),
+                          _attendanceSection(),
+                          const SizedBox(height: 40),
+                          EngagementSection(
+                            announcements: announcementsCount,
+                            events: eventsCount,
+                            surveys: surveysCount,
+                            userEmail: widget.userEmail,
+                            userData: employee ?? widget.userData ?? {},
+                            fetchHrmsContext:
+                                widget.fetchHrmsContext ?? () async => {},
+                          ),
+                          const SizedBox(height: 32),
+                          _celebrationsSection(),
+                          const SizedBox(height: 32),
+                          SnapshotSection(employee: employee),
+                          const SizedBox(height: 50),
+                        ],
+                      ),
                     ),
-                    if (showAttendance) TeamAttendanceSection(attendance: attendance),
-                    
-                    const SizedBox(height: 40),
-                    EngagementSection(
-                      announcements: announcementsCount,
-                      events: eventsCount,
-                      surveys: surveysCount,
-                      userEmail: widget.userEmail,
-                      userData: employee ?? widget.userData ?? {},
-                      fetchHrmsContext: widget.fetchHrmsContext ?? () async => {},
-                    ),
-                    
-                    const SizedBox(height: 32),
-                    CelebrationsSection(birthdays: birthdays),
-                    
-                    const SizedBox(height: 32),
-                    SnapshotSection(employee: employee),
-                    
-                    const SizedBox(height: 50),
-                  ],
-                ),
-              ),
             ),
     );
   }
