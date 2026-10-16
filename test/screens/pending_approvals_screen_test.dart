@@ -154,7 +154,7 @@ void main() {
   );
 
   testWidgets(
-    'badges: leaves/loans/travel/benefits show what the caller may decide (a real 0 included), regularization the server count, the rest "-"',
+    'badges: leaves/loans/travel/benefits show the waiting requests, decidable or not (a real 0 included), regularization the server count, the rest "-"',
     (tester) async {
       _tall(tester);
       final s = await _session();
@@ -172,7 +172,7 @@ void main() {
   );
 
   testWidgets(
-    'a leave the caller may not decide is not counted: the badge is a real 0',
+    'a waiting leave the caller may not decide IS counted: the badge shows decidable plus waiting',
     (tester) async {
       _tall(tester);
       final s = await _session(
@@ -182,12 +182,12 @@ void main() {
       );
       await tester.pumpWidget(_screen(s));
       await _settle(tester);
-      expect(_badge(tester, 'leaves'), '0'); // row-meta has no answer for 'zz'
+      expect(_badge(tester, 'leaves'), '1'); // row-meta has no answer for 'zz', but it is still waiting
     },
   );
 
   testWidgets(
-    'a count that fails shows "-" (never 0) while the others still show (leave list down, then row-meta down)',
+    'a count whose list fails shows "-" (never 0) while the others still show; row-meta down gives the waiting count',
     (tester) async {
       _tall(tester);
       final s = await _session(leavesFail: true);
@@ -199,7 +199,7 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       await tester.pumpWidget(_screen(m));
       await _settle(tester);
-      expect(_badge(tester, 'leaves'), '-');
+      expect(_badge(tester, 'leaves'), '1'); // row-meta down: the waiting count, not "-"
     },
   );
 

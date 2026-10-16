@@ -222,13 +222,13 @@ void main() {
     expect(s.requests.skip(before).every((r) => (r.method == 'GET' && r.path.endsWith('/benefits/esi/claims')) || (r.method == 'GET' && r.path.endsWith('/benefits/claims')) || r.path.endsWith('/row-meta')), isTrue); // only the badge refresh
   });
 
-  testWidgets('ESI Approvals badge is the real count; the general Approvals badge stays "-"; never a 0', (tester) async {
+  testWidgets('ESI Approvals badge is the real count; the general Approvals badge is decidable plus waiting; never a 0', (tester) async {
     _tall(tester);
     final s = await _session();
     await tester.pumpWidget(_screen(s));
     await _settle(tester);
-    expect(find.text('2'), findsOneWidget); // two pending ESI claims
-    expect(find.text('1'), findsOneWidget); // one general claim the engine lets the caller decide (the other waits for HR)
+    // two pending ESI claims, and two general claims waiting: one the engine lets the caller decide, one that waits for HR
+    expect(find.text('2'), findsNWidgets(2));
     expect(find.text('-'), findsNothing);
     expect(find.text('0'), findsNothing);
   });
@@ -238,16 +238,16 @@ void main() {
     final f = await _session(failing: {'$_org/benefits/esi/claims'});
     await tester.pumpWidget(_screen(f));
     await _settle(tester);
-    expect(find.text('-'), findsOneWidget); // ESI unknown; the general badge is still 1
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('-'), findsOneWidget); // ESI unknown; the general badge is still 2 (decidable + waiting)
+    expect(find.text('2'), findsOneWidget);
     expect(find.text('0'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
     final m = await _session(failMeta: true);
     await tester.pumpWidget(_screen(m));
     await _settle(tester);
-    expect(find.text('-'), findsOneWidget); // the engine answer failed: unknown, never 0
-    expect(find.text('2'), findsOneWidget);
+    expect(find.text('-'), findsNothing); // the engine answer failed: the general badge is the waiting count (2), never 0
+    expect(find.text('2'), findsNWidgets(2)); // ESI 2 + general waiting 2
     expect(find.text('0'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
@@ -269,7 +269,7 @@ void main() {
         expect(find.text('Asha Rao'), findsOneWidget, reason: card);
         expect(find.text('Ben Roy'), findsOneWidget, reason: card);
       } else {
-        expect(find.text('Needs my action (1)'), findsOneWidget, reason: card);
+        expect(find.text('Pending (2)'), findsOneWidget, reason: card);
         expect(find.text('Gina Gym'), findsOneWidget, reason: card);
       }
       expect(find.text('ESI claims'), findsOneWidget, reason: card);

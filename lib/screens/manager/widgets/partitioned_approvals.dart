@@ -119,8 +119,9 @@ Future<ApprovalPartitionResult> loadApprovalPartition({
   );
 }
 
-/// Three tabs: "Needs my action (n)" (Approve / Reject), "Waiting on others (n)" (who it waits for, no buttons) and
-/// "History (n)". After every decision, also a refused one, the lists are loaded again.
+/// Two tabs, as on the website: "Pending (n)" lists every request still waiting in the caller's scope; the ones the
+/// approval engine lets the caller decide now come first and carry Approve / Reject, the others say who they wait for
+/// and have no buttons. Then "History (n)". After every decision, also a refused one, the lists are loaded again.
 class PartitionedApprovalsView extends StatefulWidget {
   const PartitionedApprovalsView({
     super.key,
@@ -148,7 +149,7 @@ class PartitionedApprovalsView extends StatefulWidget {
 
 class _PartitionedApprovalsViewState extends State<PartitionedApprovalsView>
     with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 3, vsync: this);
+  late final TabController _tabs = TabController(length: 2, vsync: this);
   ApprovalPartitionResult? _data;
   bool _loading = true;
   bool _failed = false;
@@ -270,8 +271,12 @@ class _PartitionedApprovalsViewState extends State<PartitionedApprovalsView>
           fontWeight: FontWeight.bold,
         ),
         tabs: [
-          Tab(text: label('Needs my action', d?.actionable.length)),
-          Tab(text: label('Waiting on others', d?.waiting.length)),
+          Tab(
+            text: label(
+              'Pending',
+              d == null ? null : d.actionable.length + d.waiting.length,
+            ),
+          ),
           Tab(text: label('History', d?.history.length)),
         ],
       ),
@@ -289,25 +294,11 @@ class _PartitionedApprovalsViewState extends State<PartitionedApprovalsView>
       );
     }
     final index = _tabs.index;
-    final rows = index == 0
-        ? d.actionable
-        : index == 1
-        ? d.waiting
-        : d.history;
-    final note = d.metaFailed && index == 1;
-    if (d.metaFailed && index == 0) {
-      return const ApprovalMessage(
-        text: kPartitionMetaFailedNote,
-        icon: Icons.info_outline_rounded,
-      );
-    }
+    final rows = index == 0 ? [...d.actionable, ...d.waiting] : d.history;
+    final note = d.metaFailed && index == 0 && rows.isNotEmpty;
     if (rows.isEmpty) {
       return ApprovalMessage(
-        text: index == 0
-            ? 'Nothing needs your action'
-            : index == 1
-            ? 'Nothing is waiting on others'
-            : 'No history yet',
+        text: index == 0 ? 'No pending requests' : 'No history yet',
         icon: Icons.inbox_outlined,
       );
     }
@@ -345,8 +336,8 @@ class _PartitionedApprovalsViewState extends State<PartitionedApprovalsView>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          widget.cardBody(row, history: tab == 2),
-          if (tab == 0) ...[
+          widget.cardBody(row, history: tab == 1),
+          if (tab == 0 && d.actionable.contains(row)) ...[
             const SizedBox(height: 14),
             Row(
               children: [
@@ -385,7 +376,7 @@ class _PartitionedApprovalsViewState extends State<PartitionedApprovalsView>
                 ),
               ],
             ),
-          ] else if (tab == 1 && !d.metaFailed) ...[
+          ] else if (tab == 0 && !d.metaFailed) ...[
             const SizedBox(height: 10),
             Text(
               approvalWaitingOnText(d.metaById[row['id'].toString()]),

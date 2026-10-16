@@ -22,9 +22,8 @@ class LeaveApprovalsPanel extends StatefulWidget {
       repo: repo,
       module: 'leaves',
       loadWaiting: () => repo.leaveApplications(history: false),
-      throwOnMetaFailure: true,
     );
-    return p.actionable.length;
+    return p.actionable.length + p.waiting.length;
   }
 
   @override

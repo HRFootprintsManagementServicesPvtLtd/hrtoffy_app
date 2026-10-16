@@ -129,7 +129,7 @@ Future<void> _pumpAndTapReview(WidgetTester tester) async {
 void main() {
   group('LoanApprovalsPanel', () {
     testWidgets(
-      'three-way split by the engine answer; own loans are listed nowhere; the row-meta call is exact',
+      'Pending (decidable first, then waiting) and History, split by the engine answer; own loans are listed nowhere; the row-meta call is exact',
       (tester) async {
         _tall(tester);
         final s = await _session(
@@ -152,18 +152,13 @@ void main() {
         expect(meta.json, {
           'recordIds': ['a', 'b'],
         });
-        expect(find.text('Needs my action (1)'), findsOneWidget);
-        expect(find.text('Waiting on others (1)'), findsOneWidget);
+        expect(find.text('Pending (2)'), findsOneWidget);
         expect(find.text('History (2)'), findsOneWidget);
         expect(find.text('L-1'), findsOneWidget);
-        expect(find.text('L-2'), findsNothing);
-        expect(find.text('Review'), findsOneWidget);
-
-        await tester.tap(find.text('Waiting on others (1)'));
-        await _settle(tester);
+        // the waiting loan is in the same Pending list: no Review button, a View button and who it waits for
         expect(find.text('L-2'), findsOneWidget);
+        expect(find.text('Review'), findsOneWidget); // only L-1
         expect(find.text('Waiting on HR head'), findsOneWidget);
-        expect(find.text('Review'), findsNothing);
         expect(find.text('Approve'), findsNothing);
         expect(find.text('View'), findsOneWidget);
 
@@ -188,7 +183,7 @@ void main() {
       );
       await tester.pumpWidget(_loanPanel(s));
       await _settle(tester);
-      expect(find.text('Needs my action (0)'), findsOneWidget);
+      expect(find.text('Pending (0)'), findsOneWidget);
       expect(find.text('History (0)'), findsOneWidget);
       expect(find.text('No loan requests need your action.'), findsOneWidget);
       expect(find.text('L-MINE'), findsNothing);
@@ -225,7 +220,7 @@ void main() {
         expect(find.text('Loan approved'), findsOneWidget);
         expect(_gets(s), hasLength(2));
         expect(_metaCalls(s), hasLength(2));
-        expect(find.text('Needs my action (1)'), findsOneWidget);
+        expect(find.text('Pending (1)'), findsOneWidget);
         expect(find.text('History (1)'), findsOneWidget);
       },
     );
@@ -332,13 +327,10 @@ void main() {
         await tester.pumpWidget(_loanPanel(s));
         await _settle(tester);
         expect(find.text(kApprovalMetaFailed), findsOneWidget);
-        expect(find.text('Needs my action'), findsOneWidget); // no count
-        expect(find.text('Review'), findsNothing);
-        await tester.tap(find.text('Waiting on others (1)'));
-        await _settle(tester);
-        expect(find.text(kApprovalMetaFailed), findsOneWidget);
+        expect(find.text('Pending (1)'), findsOneWidget);
         expect(find.text('L-1'), findsOneWidget);
         expect(find.text('Review'), findsNothing);
+        expect(find.textContaining('Waiting on'), findsNothing);
         expect(find.textContaining('exploded'), findsNothing);
       },
     );
@@ -370,7 +362,7 @@ void main() {
     });
 
     test(
-      'countActionable counts the rows the engine allows; throws on failure',
+      'countActionable counts decidable plus waiting rows; a row-meta failure gives the waiting count; a list failure throws',
       () async {
         final s = await _session(
           '/loans',
@@ -387,7 +379,7 @@ void main() {
             loansRepository: LoansRepository(auth: s.auth),
             approvalsRepository: ApprovalsRepository(auth: s.auth),
           ),
-          1,
+          2, // a (decidable) + b (waiting)
         );
         final bad = await _session(
           '/loans',
@@ -395,11 +387,11 @@ void main() {
           meta: () => null,
         );
         expect(
-          LoanApprovalsPanel.countActionable(
+          await LoanApprovalsPanel.countActionable(
             loansRepository: LoansRepository(auth: bad.auth),
             approvalsRepository: ApprovalsRepository(auth: bad.auth),
           ),
-          throwsA(anything),
+          1, // row-meta failed: the waiting count
         );
         final failList = await _session('/loans', () => [], failList: true);
         expect(
@@ -493,13 +485,15 @@ void main() {
         expect(_metaCalls(s).single.json, {
           'recordIds': ['a', 'b'],
         });
-        expect(find.text('Needs my action (1)'), findsOneWidget);
-        expect(find.text('Waiting on others (1)'), findsOneWidget);
+        expect(find.text('Pending (2)'), findsOneWidget);
         expect(find.text('History (1)'), findsOneWidget);
         expect(find.text('TRV-1'), findsOneWidget);
-        expect(find.text('TRV-2'), findsNothing);
+        // the claim waiting at HR manager is in the same Pending list, with no Review button
+        expect(find.text('TRV-2'), findsOneWidget);
+        expect(find.text('Waiting on HR manager'), findsOneWidget);
+        expect(find.text('Review'), findsOneWidget);
         expect(find.text('TRV-MINE'), findsNothing);
-        expect(find.text('Ben Roy • Engineer'), findsOneWidget);
+        expect(find.text('Ben Roy • Engineer'), findsNWidgets(2));
 
         await tester.tap(find.text('Review'));
         await _settle(tester);
@@ -513,7 +507,7 @@ void main() {
       },
     );
 
-    testWidgets('waiting tab names who it waits for, with no buttons', (
+    testWidgets('Pending names who a waiting claim waits for, with no buttons', (
       tester,
     ) async {
       _tall(tester);
@@ -524,13 +518,9 @@ void main() {
       );
       await tester.pumpWidget(travelPanel(s));
       await _settle(tester);
-      expect(find.text('Needs my action (0)'), findsOneWidget);
-      expect(
-        find.text('No claims require your action at this time.'),
-        findsOneWidget,
-      );
-      await tester.tap(find.text('Waiting on others (2)'));
-      await _settle(tester);
+      expect(find.text('Pending (2)'), findsOneWidget);
+      expect(find.text('TRV-2'), findsOneWidget);
+      expect(find.text('TRV-4'), findsOneWidget);
       expect(find.text('Waiting on HR manager'), findsOneWidget);
       expect(find.text('Waiting on someone else'), findsOneWidget);
       expect(find.text('weird_role'), findsNothing);
@@ -559,7 +549,7 @@ void main() {
         expect(post.path, '$_org/travel/claims/a/approve');
         expect(post.json, <String, dynamic>{});
         expect(find.text('Claim approved'), findsOneWidget);
-        expect(find.text('Needs my action (0)'), findsOneWidget);
+        expect(find.text('Pending (0)'), findsOneWidget);
         expect(find.text('History (1)'), findsOneWidget);
         expect(_gets(s), hasLength(2));
 
@@ -639,8 +629,9 @@ void main() {
         await tester.pumpWidget(travelPanel(m));
         await _settle(tester);
         expect(find.text(kApprovalMetaFailed), findsOneWidget);
-        await tester.tap(find.text('Waiting on others (1)'));
-        await _settle(tester);
+        expect(find.text('Pending (1)'), findsOneWidget);
+        expect(find.text('TRV-1'), findsOneWidget);
+        expect(find.textContaining('Waiting on'), findsNothing);
         expect(find.text('Review'), findsNothing);
         expect(find.text('₹0.00'), findsNothing);
         expect(find.text('₹0'), findsNothing);
@@ -655,7 +646,7 @@ void main() {
       },
     );
 
-    test('countActionable', () async {
+    test('countActionable: decidable plus waiting; row-meta failure gives the waiting count; list failure throws', () async {
       final s = await _session(
         '/travel/claims',
         () => [
@@ -669,7 +660,7 @@ void main() {
           travelRepository: TravelRepository(auth: s.auth),
           approvalsRepository: ApprovalsRepository(auth: s.auth),
         ),
-        1,
+        7, // a (decidable) + 6 waiting
       );
       final bad = await _session(
         '/travel/claims',
@@ -677,9 +668,17 @@ void main() {
         meta: () => null,
       );
       expect(
-        TravelApprovalsPanel.countActionable(
+        await TravelApprovalsPanel.countActionable(
           travelRepository: TravelRepository(auth: bad.auth),
           approvalsRepository: ApprovalsRepository(auth: bad.auth),
+        ),
+        1,
+      );
+      final failList = await _session('/travel/claims', () => [], failList: true);
+      expect(
+        TravelApprovalsPanel.countActionable(
+          travelRepository: TravelRepository(auth: failList.auth),
+          approvalsRepository: ApprovalsRepository(auth: failList.auth),
         ),
         throwsA(anything),
       );
@@ -747,17 +746,15 @@ void main() {
         expect(_metaCalls(s).single.json, {
           'recordIds': ['a', 'b'],
         });
-        expect(find.text('Needs my action (1)'), findsOneWidget);
-        expect(find.text('Waiting on others (1)'), findsOneWidget);
+        expect(find.text('Pending (2)'), findsOneWidget);
         expect(find.text('History (1)'), findsOneWidget);
         expect(find.text('Asha Rao'), findsOneWidget);
+        expect(find.text('Ben Roy'), findsOneWidget); // waiting, same list
         expect(find.text('Esi Person'), findsNothing);
         expect(find.text('Me'), findsNothing);
-        expect(find.text('₹1,250'), findsOneWidget);
-        await tester.tap(find.text('Waiting on others (1)'));
-        await _settle(tester);
+        expect(find.text('₹1,250'), findsNWidgets(2));
         expect(find.text('Waiting on HR manager'), findsOneWidget);
-        expect(find.text('Review'), findsNothing);
+        expect(find.text('Review'), findsOneWidget); // only Asha's
       },
     );
 
@@ -788,8 +785,40 @@ void main() {
       expect(post.json, {'approvedAmount': 1250});
       expect(find.text('Claim approved'), findsOneWidget);
       expect(_gets(s), hasLength(2));
-      expect(find.text('Needs my action (0)'), findsOneWidget);
+      expect(find.text('Pending (0)'), findsOneWidget);
     });
+
+    testWidgets(
+      'Pending mixes decidable rows (Review) first and others (Waiting on HR head, View only) after',
+      (tester) async {
+        _tall(tester);
+        final s = await _session(
+          '/benefits/claims',
+          () => [
+            gen('b', 'Ben Roy', status: 'manager_approved'),
+            gen('a', 'Asha Rao'),
+          ],
+          meta: () => {'a': _can(), 'b': _cannot('hr_head')},
+        );
+        await tester.pumpWidget(genPanel(s));
+        await _settle(tester);
+        expect(find.text('Pending (2)'), findsOneWidget);
+        // decidable first although the server listed it second
+        expect(
+          tester.getTopLeft(find.text('Asha Rao')).dy,
+          lessThan(tester.getTopLeft(find.text('Ben Roy')).dy),
+        );
+        expect(find.text('Waiting on HR head'), findsOneWidget);
+        expect(find.text('Review'), findsOneWidget); // Asha only
+        expect(find.text('View'), findsOneWidget); // Ben: no decision buttons
+        expect(find.text('Approve'), findsNothing);
+        // the waiting-on text sits under Ben's card, after Asha's
+        expect(
+          tester.getTopLeft(find.text('Waiting on HR head')).dy,
+          greaterThan(tester.getTopLeft(find.text('Ben Roy')).dy),
+        );
+      },
+    );
 
     testWidgets('reject needs a reason and sends {comments}', (tester) async {
       _tall(tester);
@@ -864,7 +893,10 @@ void main() {
       await tester.pumpWidget(genPanel(m));
       await _settle(tester);
       expect(find.text(kApprovalMetaFailed), findsOneWidget);
+      expect(find.text('Pending (1)'), findsOneWidget);
+      expect(find.text('Asha Rao'), findsOneWidget);
       expect(find.text('Review'), findsNothing);
+      expect(find.textContaining('Waiting on'), findsNothing);
 
       await tester.pumpWidget(const SizedBox());
       final f = await _session('/benefits/claims', () => [], failList: true);
@@ -881,7 +913,7 @@ void main() {
     });
 
     test(
-      'countActionable for the general list and for ESI plus general',
+      'countActionable: general = decidable plus waiting; ESI plus general adds the ESI claims',
       () async {
         final s = await signedIn((req) async {
           if (req.method == 'GET' && req.url.path == '$_org/benefits/claims') {
@@ -909,7 +941,7 @@ void main() {
             benefitsRepository: repo,
             approvalsRepository: approvals,
           ),
-          1,
+          2, // a (decidable) + b (waiting); the ESI row is not general
         );
         expect(
           await BenefitApprovalsPanel.countActionable(benefitsRepository: repo),
@@ -920,7 +952,7 @@ void main() {
             benefitsRepository: repo,
             approvalsRepository: approvals,
           ),
-          3,
+          4, // 2 general + 2 ESI
         );
       },
     );
@@ -956,7 +988,7 @@ void main() {
         expect(find.text('No ESI claims need your action.'), findsOneWidget);
         await tester.tap(find.text('Other claims'));
         await _settle(tester);
-        expect(find.text('Needs my action (1)'), findsOneWidget);
+        expect(find.text('Pending (1)'), findsOneWidget);
         expect(find.text('Asha Rao'), findsOneWidget);
         expect(
           find.byKey(const Key('general-benefit-approvals-slot')),

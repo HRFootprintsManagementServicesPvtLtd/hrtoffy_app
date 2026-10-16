@@ -98,7 +98,7 @@ Future<ApprovalSplit> splitApprovalRows({
   );
 }
 
-/// The number of rows the caller may decide now. Throws when the engine's answer is not available.
+/// The number of rows still waiting in the caller's scope (decidable now or not). 
 Future<int> countActionableRows({
   required List<Map<String, dynamic>> rows,
   required String module,
@@ -109,8 +109,7 @@ Future<int> countActionableRows({
     module: module,
     approvals: approvals,
   );
-  if (split.metaFailed) throw StateError('row-meta unavailable');
-  return split.needsMe.length;
+  return split.needsMe.length + split.waiting.length;
 }
 
 const String kApprovalMetaFailed = "Couldn't check what you can decide.";
@@ -123,7 +122,8 @@ void approvalToast(BuildContext context, String text, {bool error = false}) {
   );
 }
 
-/// A panel with three lists (Needs my action / Waiting on others / History) for one module. Decisions are sent through
+/// A panel with two lists, as on the website (Pending: everything waiting, decidable rows first with the review button,
+/// the others marked "Waiting on ..."; History) for one module. Decisions are sent through
 /// `decide`; the list is reloaded after every decision, also a refused one.
 class ApprovalSplitPanel extends StatefulWidget {
   const ApprovalSplitPanel({
@@ -236,10 +236,9 @@ class _ApprovalSplitPanelState extends State<ApprovalSplitPanel> {
     return Column(
       children: [
         ApprovalSegments(
-          labels: const ['Needs my action', 'Waiting on others', 'History'],
+          labels: const ['Pending', 'History'],
           counts: [
-            s == null || s.metaFailed ? null : s.needsMe.length,
-            s?.waiting.length,
+            s == null ? null : s.needsMe.length + s.waiting.length,
             s?.history.length,
           ],
           index: _tab,
@@ -259,28 +258,13 @@ class _ApprovalSplitPanelState extends State<ApprovalSplitPanel> {
         isError: true,
       );
     }
-    if (_tab == 0 && s.metaFailed) {
-      return ApprovalMessage(
-        kApprovalMetaFailed,
-        onRetry: _load,
-        isError: true,
-      );
-    }
-    final shown = _tab == 0
-        ? s.needsMe
-        : _tab == 1
-        ? s.waiting
-        : s.history;
+    final shown = _tab == 0 ? [...s.needsMe, ...s.waiting] : s.history;
     if (shown.isEmpty) {
       return ApprovalMessage(
-        _tab == 0
-            ? widget.emptyActionText
-            : _tab == 1
-            ? 'Nothing is waiting on someone else.'
-            : widget.emptyHistoryText,
+        _tab == 0 ? widget.emptyActionText : widget.emptyHistoryText,
       );
     }
-    final note = _tab == 1 && s.metaFailed;
+    final note = _tab == 0 && s.metaFailed;
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView.separated(
@@ -305,13 +289,14 @@ class _ApprovalSplitPanelState extends State<ApprovalSplitPanel> {
               ],
             );
           }
-          return _card(shown[i - (note ? 1 : 0)], _tab);
+          final row = shown[i - (note ? 1 : 0)];
+          return _card(row, _tab, s.needsMe.contains(row));
         },
       ),
     );
   }
 
-  Widget _card(Map<String, dynamic> row, int tab) {
+  Widget _card(Map<String, dynamic> row, int tab, bool canDecide) {
     final id = row['id']?.toString();
     final s = _split!;
     return KeyedSubtree(
@@ -319,7 +304,7 @@ class _ApprovalSplitPanelState extends State<ApprovalSplitPanel> {
       child: approvalCardShell(
         children: [
           ...widget.cardDetails(row),
-          if (tab == 1 && !s.metaFailed)
+          if (tab == 0 && !canDecide && !s.metaFailed)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
@@ -332,9 +317,9 @@ class _ApprovalSplitPanelState extends State<ApprovalSplitPanel> {
               ),
             ),
           approvalReviewButton(
-            open: tab == 0,
+            open: canDecide,
             busy: _busyId == id,
-            onPressed: () => _open(row, tab == 0),
+            onPressed: () => _open(row, canDecide),
           ),
         ],
       ),

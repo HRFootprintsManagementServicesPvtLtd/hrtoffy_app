@@ -124,7 +124,7 @@ Future<void> _open(WidgetTester t, String card) async {
 }
 
 void main() {
-  testWidgets('renders with Supabase uninitialised; the approvals badge counts the requests the engine lets the caller decide', (tester) async {
+  testWidgets('renders with Supabase uninitialised; the approvals badge counts the requests waiting for the caller or others', (tester) async {
     _tall(tester);
     final s = await _session();
     await tester.pumpWidget(_screen(s));
@@ -132,7 +132,7 @@ void main() {
     for (final c in ['My Loans', 'Apply for Loan', 'EMI Schedule', 'Approvals', 'All Loans', 'HR Submit']) {
       expect(find.text(c), findsOneWidget, reason: c);
     }
-    expect(find.text('1'), findsOneWidget); // T-1 may be decided; T-2 waits for HR; T-3 is decided
+    expect(find.text('2'), findsOneWidget); // T-1 may be decided and T-2 waits for HR (both pending); T-3 is decided
     expect(find.text('-'), findsNothing);
   });
 
@@ -145,12 +145,13 @@ void main() {
     expect(find.text('0'), findsNothing);
   });
 
-  testWidgets('the approvals badge is "-" when the engine answer fails, never 0', (tester) async {
+  testWidgets('the approvals badge is the waiting count when the engine answer fails, never "-" or 0', (tester) async {
     _tall(tester);
     final s = await _session(failMeta: true);
     await tester.pumpWidget(_screen(s));
     await _settle(tester);
-    expect(find.text('-'), findsOneWidget);
+    expect(find.text('2'), findsOneWidget); // T-1 and T-2 are still waiting
+    expect(find.text('-'), findsNothing);
     expect(find.text('0'), findsNothing);
   });
 
@@ -321,10 +322,11 @@ void main() {
     await tester.pumpWidget(_screen(s));
     await _settle(tester);
     await _open(tester, 'Approvals');
-    expect(find.text('Needs my action (1)'), findsOneWidget);
-    expect(find.text('Waiting on others (1)'), findsOneWidget);
+    expect(find.text('Pending (2)'), findsOneWidget);
     expect(find.text('T-1'), findsOneWidget);
-    expect(find.text('T-2'), findsNothing);
+    expect(find.text('T-2'), findsOneWidget); // waiting at HR: in Pending, without a Review button
+    expect(find.text('Waiting on HR manager'), findsOneWidget);
+    expect(find.text('Review'), findsOneWidget); // T-1 only
     expect(find.text(kLoansUnavailableMessage), findsNothing);
     expect(s.requests.every((r) => r.method == 'GET' || r.path.endsWith('/row-meta')), isTrue); // opening decides nothing
   });

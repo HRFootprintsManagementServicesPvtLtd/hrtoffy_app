@@ -241,7 +241,7 @@ void main() {
 
   group('LeaveApprovalsPanel', () {
     testWidgets(
-      'splits into needs action / waiting on others / history and drops own rows',
+      'Pending lists decidable rows first then the waiting ones, plus History, and drops own rows',
       (tester) async {
         _tall(tester);
         final srv = _Server(
@@ -267,25 +267,25 @@ void main() {
         );
         await _settle(tester);
 
-        expect(find.text('Needs my action (1)'), findsOneWidget);
-        expect(find.text('Waiting on others (2)'), findsOneWidget);
+        expect(find.text('Pending (3)'), findsOneWidget);
         expect(find.text('History (1)'), findsOneWidget);
         expect(find.text('Ann Action'), findsOneWidget);
         expect(find.byKey(const ValueKey('approve-a')), findsOneWidget);
         expect(find.byKey(const ValueKey('reject-a')), findsOneWidget);
         expect(find.text('Me Myself'), findsNothing);
-        expect(find.text('Casual leave'), findsOneWidget);
-        expect(find.text('20 Oct 2026 - 22 Oct 2026'), findsOneWidget);
-        expect(find.text('3'), findsOneWidget);
+        expect(find.text('Casual leave'), findsNWidgets(3));
+        expect(find.text('20 Oct 2026 - 22 Oct 2026'), findsNWidgets(3));
+        expect(find.text('3'), findsNWidgets(3));
 
-        await tester.tap(find.text('Waiting on others (2)'));
-        await _settle(tester);
+        // the waiting rows are in the same Pending list, without buttons
         expect(find.text('Bob Blocked'), findsOneWidget);
         expect(find.text('Cy Meta'), findsOneWidget);
         expect(find.text('Waiting on HR manager'), findsOneWidget);
         expect(find.text('Waiting on someone else'), findsOneWidget);
-        expect(find.text('Approve'), findsNothing);
-        expect(find.text('Reject'), findsNothing);
+        expect(find.byKey(const ValueKey('approve-b')), findsNothing);
+        expect(find.byKey(const ValueKey('approve-c')), findsNothing);
+        expect(find.text('Approve'), findsOneWidget); // only Ann's
+        expect(find.text('Reject'), findsOneWidget);
 
         await tester.tap(find.text('History (1)'));
         await _settle(tester);
@@ -320,15 +320,48 @@ void main() {
           ),
         );
         await _settle(tester);
-        expect(find.text(kPartitionMetaFailedNote), findsOneWidget);
-        expect(find.text('Approve'), findsNothing);
-        await tester.tap(find.textContaining('Waiting on others'));
-        await _settle(tester);
+        expect(find.text('Pending (1)'), findsOneWidget);
         expect(find.text('Ann Action'), findsOneWidget);
         expect(find.text(kPartitionMetaFailedNote), findsOneWidget);
+        expect(find.textContaining('Waiting on'), findsNothing);
         expect(find.text('Approve'), findsNothing);
         expect(find.text('Reject'), findsNothing);
         expect(find.textContaining('exploded'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Pending mixes decidable rows (buttons) first and others (Waiting on HR head, no buttons) after',
+      (tester) async {
+        _tall(tester);
+        final srv = _Server(
+          leaves: [
+            _leave('w', 'Wes Waiting', 'manager_approved'),
+            _leave('a', 'Ann Action', 'pending'),
+          ],
+          meta: {'a': _can('manager'), 'w': _cannot('hr_head')},
+        );
+        final s = await srv.session();
+        await tester.pumpWidget(
+          _host(
+            LeaveApprovalsPanel(
+              approvalsRepository: ApprovalsRepository(auth: s.auth),
+            ),
+          ),
+        );
+        await _settle(tester);
+        expect(find.text('Pending (2)'), findsOneWidget);
+        // decidable first although the server listed it second
+        expect(
+          tester.getTopLeft(find.text('Ann Action')).dy,
+          lessThan(tester.getTopLeft(find.text('Wes Waiting')).dy),
+        );
+        expect(find.byKey(const ValueKey('approve-a')), findsOneWidget);
+        expect(find.byKey(const ValueKey('reject-a')), findsOneWidget);
+        expect(find.byKey(const ValueKey('approve-w')), findsNothing);
+        expect(find.byKey(const ValueKey('reject-w')), findsNothing);
+        expect(find.text('Waiting on HR head'), findsOneWidget);
+        expect(find.text('Approve'), findsOneWidget);
       },
     );
 
@@ -475,7 +508,7 @@ void main() {
     }
 
     test(
-      'countActionable counts only the rows the caller may decide; throws when unknown',
+      'countActionable counts decidable plus waiting rows (not own); a row-meta failure gives the waiting count',
       () async {
         final srv = _Server(
           leaves: [
@@ -490,15 +523,15 @@ void main() {
           await LeaveApprovalsPanel.countActionable(
             approvalsRepository: ApprovalsRepository(auth: s.auth),
           ),
-          1,
+          2, // a (decidable) + b (waiting); own row m excluded
         );
 
         srv.metaStatus = 500;
-        await expectLater(
-          LeaveApprovalsPanel.countActionable(
+        expect(
+          await LeaveApprovalsPanel.countActionable(
             approvalsRepository: ApprovalsRepository(auth: s.auth),
           ),
-          throwsA(isA<Object>()),
+          2, // row-meta failed: still the waiting count
         );
         srv.leaves = [];
         srv.metaStatus = 200;
@@ -538,17 +571,15 @@ void main() {
         final s = await srv.session();
         await tester.pumpWidget(panel(s));
         await _settle(tester);
-        expect(find.text('Needs my action (1)'), findsOneWidget);
-        expect(find.text('Waiting on others (1)'), findsOneWidget);
+        expect(find.text('Pending (2)'), findsOneWidget);
         expect(find.text('History (2)'), findsOneWidget);
-        expect(find.text('₹ 1,250'), findsOneWidget);
-        expect(find.text('Travel'), findsOneWidget); // category name
+        expect(find.text('₹ 1,250'), findsNWidgets(2));
+        expect(find.text('Travel'), findsNWidgets(2)); // category name
         expect(find.text('Me Myself'), findsNothing);
         expect(find.text('Dee Draft'), findsNothing);
-        await tester.tap(find.text('Waiting on others (1)'));
-        await _settle(tester);
         expect(find.text('Waiting on HR manager'), findsOneWidget);
-        expect(find.text('Approve'), findsNothing);
+        expect(find.byKey(const ValueKey('approve-a')), findsOneWidget);
+        expect(find.byKey(const ValueKey('approve-b')), findsNothing);
         await tester.tap(find.text('History (2)'));
         await _settle(tester);
         expect(find.text('Hal History'), findsOneWidget);
@@ -623,7 +654,7 @@ void main() {
     });
 
     test(
-      'countActionable: count on success (a real 0 too), throws on row-meta or list failure',
+      'countActionable: decidable plus waiting on success (a real 0 too), waiting count on row-meta failure',
       () async {
         final srv = _Server(
           claims: [_claim('a', 'A', 'pending'), _claim('b', 'B', 'pending')],
@@ -635,7 +666,7 @@ void main() {
           await ExpenseApprovalsPanel.countActionable(
             approvalsRepository: repo,
           ),
-          1,
+          2,
         );
         srv.claims = [];
         expect(
@@ -646,9 +677,11 @@ void main() {
         );
         srv.claims = [_claim('a', 'A', 'pending')];
         srv.metaStatus = 500;
-        await expectLater(
-          ExpenseApprovalsPanel.countActionable(approvalsRepository: repo),
-          throwsA(isA<Object>()),
+        expect(
+          await ExpenseApprovalsPanel.countActionable(
+            approvalsRepository: repo,
+          ),
+          1,
         );
       },
     );

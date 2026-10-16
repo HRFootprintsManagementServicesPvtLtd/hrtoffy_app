@@ -29,9 +29,8 @@ class ExpenseApprovalsPanel extends StatefulWidget {
       repo: repo,
       module: 'expenses',
       loadWaiting: repo.teamExpenseClaims,
-      throwOnMetaFailure: true,
     );
-    return p.actionable.length;
+    return p.actionable.length + p.waiting.length;
   }
 
   @override

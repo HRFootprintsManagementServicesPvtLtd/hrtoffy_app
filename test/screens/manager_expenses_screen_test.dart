@@ -379,7 +379,7 @@ void main() {
       await _settle(tester);
       await _open(tester, 'Approvals');
       expect(find.byType(ExpenseApprovalsPanel), findsOneWidget);
-      expect(find.text('Needs my action (1)'), findsOneWidget);
+      expect(find.textContaining('Pending ('), findsOneWidget);
       expect(s.requests.any((r) => r.path.endsWith('/approvals')), isFalse);
     },
   );
