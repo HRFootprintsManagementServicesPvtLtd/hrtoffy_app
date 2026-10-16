@@ -74,6 +74,7 @@ class _ApprovalReviewDialog extends StatefulWidget {
 class _ApprovalReviewDialogState extends State<_ApprovalReviewDialog> {
   final _reason = TextEditingController();
   bool _rejecting = false;
+  String? _reasonError;
 
   @override
   void dispose() {
@@ -104,8 +105,12 @@ class _ApprovalReviewDialogState extends State<_ApprovalReviewDialog> {
                 key: const Key('reject-reason'),
                 controller: _reason,
                 maxLines: 3,
+                onChanged: (_) {
+                  if (_reasonError != null) setState(() => _reasonError = null);
+                },
                 decoration: InputDecoration(
-                  hintText: 'Reason for rejecting (optional)',
+                  errorText: _reasonError,
+                  hintText: 'Reason for rejecting',
                   hintStyle: GoogleFonts.montserrat(fontSize: 12),
                   filled: true,
                   fillColor: Colors.grey.shade50,
@@ -173,10 +178,17 @@ class _ApprovalReviewDialogState extends State<_ApprovalReviewDialog> {
               const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton(
-                  onPressed: () => Navigator.pop(
-                    context,
-                    ApprovalDecision.reject(_reason.text.trim()),
-                  ),
+                  onPressed: () {
+                    final reason = _reason.text.trim();
+                    if (reason.isEmpty) {
+                      setState(
+                        () => _reasonError =
+                            'Please give a reason for rejecting.',
+                      );
+                      return;
+                    }
+                    Navigator.pop(context, ApprovalDecision.reject(reason));
+                  },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red,
                     foregroundColor: Colors.white,
@@ -228,7 +240,8 @@ class ApprovalSegments extends StatelessWidget {
                 borderRadius: BorderRadius.circular(10),
                 onTap: () => onChanged(i),
                 child: Container(
-                  height: 36,
+                  height: labels.length > 2 ? 44 : 36,
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: i == index
@@ -240,8 +253,11 @@ class ApprovalSegments extends StatelessWidget {
                     counts[i] == null
                         ? labels[i]
                         : '${labels[i]} (${counts[i]})',
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: GoogleFonts.montserrat(
-                      fontSize: 11,
+                      fontSize: labels.length > 2 ? 10 : 11,
                       fontWeight: FontWeight.bold,
                       color: i == index ? Colors.white : Colors.grey.shade600,
                     ),

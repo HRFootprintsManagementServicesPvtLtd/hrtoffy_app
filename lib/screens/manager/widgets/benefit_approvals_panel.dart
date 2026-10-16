@@ -26,19 +26,19 @@ String _kind(dynamic v) {
 /// not returned, so there is no history here. ESI claims carry no claimed amount (the server stores 0), so none is shown.
 /// Approving or rejecting sends a JSON body (the route requires one); a reason goes with a rejection only.
 ///
-/// General (non-ESI) benefit claims have no manager route: they are decided from the approval inbox, which the lead
-/// integrates in [_GeneralBenefitApprovalsSlot].
+/// The server already answers only with the claims waiting for this caller, so no row-meta split is needed here.
+/// General (non-ESI) claims are in [BenefitGeneralApprovalsPanel].
 class BenefitApprovalsPanel extends StatefulWidget {
-  const BenefitApprovalsPanel({
-    super.key,
-    this.benefitsRepository,
-    this.showGeneralSlot = true,
-  });
+  const BenefitApprovalsPanel({super.key, this.benefitsRepository});
 
   final BenefitsRepository? benefitsRepository;
 
-  /// The note about general (non-ESI) claims under the ESI list; off where a screen lists those claims itself.
-  final bool showGeneralSlot;
+  /// How many ESI claims wait for the caller (the server's own list). Throws when it could not be loaded.
+  static Future<int> countActionable({
+    BenefitsRepository? benefitsRepository,
+  }) async =>
+      (await (benefitsRepository ?? BenefitsRepository()).esiApprovalClaims())
+          .length;
 
   @override
   State<BenefitApprovalsPanel> createState() => _BenefitApprovalsPanelState();
@@ -152,7 +152,6 @@ class _BenefitApprovalsPanelState extends State<BenefitApprovalsPanel> {
           ),
         ),
         Expanded(child: _body(claims)),
-        if (widget.showGeneralSlot) const _GeneralBenefitApprovalsSlot(),
       ],
     );
   }
@@ -231,33 +230,6 @@ class _BenefitApprovalsPanelState extends State<BenefitApprovalsPanel> {
           onPressed: () => _review(claim),
         ),
       ],
-    );
-  }
-}
-
-/// LEAD-INTEGRATES: general (non-ESI) benefit claims have no manager route (they need COMPENSATION_MANAGE), so they are
-/// decided from the approval inbox. Replace this widget with the inbox-based panel; until then it says so.
-class _GeneralBenefitApprovalsSlot extends StatelessWidget {
-  const _GeneralBenefitApprovalsSlot();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      key: const Key('general-benefit-approvals-slot'),
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.orange.shade50,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        "General benefit claims aren't available here yet.",
-        style: GoogleFonts.montserrat(
-          fontSize: 12,
-          color: Colors.orange.shade900,
-        ),
-      ),
     );
   }
 }

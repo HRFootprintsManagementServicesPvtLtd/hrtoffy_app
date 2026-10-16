@@ -50,11 +50,13 @@ class ManagerRepository extends BaseRepository {
       _listAll('managerId', me),
       _listAll('reviewerId', me),
     ]);
-    final tree = results[0].where((m) => m['id'].toString() != me).toList();
+    // Only people who work here now: a former employee still has a manager on record but is not part of the team.
+    bool current(Map<String, dynamic> m) => m['id'].toString() != me && (m['status'] ?? 'active').toString().toLowerCase() == 'active';
+    final tree = results[0].where(current).toList();
     return ManagerTeam(
       direct: tree.where((m) => m['manager_id']?.toString() == me).toList(),
       indirect: tree.where((m) => m['manager_id']?.toString() != me).toList(),
-      reviewees: results[1].where((m) => m['id'].toString() != me).toList(),
+      reviewees: results[1].where(current).toList(),
     );
   }
 

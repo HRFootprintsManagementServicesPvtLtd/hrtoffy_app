@@ -687,4 +687,81 @@ void main() {
       },
     );
   });
+
+  group('who sent a message', () {
+    Widget bubble(
+      Map<String, dynamic> m, {
+      required bool mine,
+      bool showName = true,
+    }) => MaterialApp(
+      home: Scaffold(
+        body: ChatMessageBubble(
+          message: m,
+          isMine: mine,
+          showSenderName: showName,
+        ),
+      ),
+    );
+    final base = {
+      'id': 'm1',
+      'channel_id': 'ch-1',
+      'sender_user_id': 'u',
+      'content': 'hello',
+      'message_type': 'text',
+      'created_at': '2026-10-16T10:00:00.000Z',
+    };
+
+    testWidgets("someone else's message shows the sender's name, on the left", (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        bubble({...base, 'sender_name': 'Aanya Reddy'}, mine: false),
+      );
+      expect(find.byKey(const Key('chat-sender-name')), findsOneWidget);
+      expect(find.text('Aanya Reddy'), findsOneWidget);
+      final align = tester.widget<Align>(
+        find
+            .ancestor(of: find.text('hello'), matching: find.byType(Align))
+            .first,
+      );
+      expect(align.alignment, Alignment.centerLeft);
+    });
+
+    testWidgets('your own message shows no name and sits on the right', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        bubble({...base, 'sender_name': 'Me Myself'}, mine: true),
+      );
+      expect(find.byKey(const Key('chat-sender-name')), findsNothing);
+      final align = tester.widget<Align>(
+        find
+            .ancestor(of: find.text('hello'), matching: find.byType(Align))
+            .first,
+      );
+      expect(align.alignment, Alignment.centerRight);
+    });
+
+    testWidgets(
+      'a message without a sender name (or with names switched off) shows none',
+      (tester) async {
+        await tester.pumpWidget(
+          bubble({...base, 'sender_name': null}, mine: false),
+        );
+        expect(find.byKey(const Key('chat-sender-name')), findsNothing);
+        await tester.pumpWidget(
+          bubble({...base, 'sender_name': '  '}, mine: false),
+        );
+        expect(find.byKey(const Key('chat-sender-name')), findsNothing);
+        await tester.pumpWidget(
+          bubble(
+            {...base, 'sender_name': 'Aanya Reddy'},
+            mine: false,
+            showName: false,
+          ),
+        );
+        expect(find.byKey(const Key('chat-sender-name')), findsNothing);
+      },
+    );
+  });
 }

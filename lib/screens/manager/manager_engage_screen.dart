@@ -4,7 +4,9 @@ import 'package:intl/intl.dart';
 
 import '../../core/api/json_case.dart';
 import '../../repositories/chat_repository.dart';
+import '../../repositories/employee_repository.dart';
 import '../../repositories/engagement_repository.dart';
+import '../../repositories/manager_repository.dart';
 import '../../repositories/helpdesk_repository.dart';
 import '../../repositories/letters_repository.dart';
 import '../../repositories/recruitment_repository.dart';
@@ -39,6 +41,8 @@ class ManagerEngageScreen extends StatefulWidget {
   final ChatService? chatService;
   final ChatRepository? chatRepository;
   final TasksRepository? tasksRepository;
+  final ManagerRepository? managerRepository;
+  final EmployeeRepository? employeeRepository;
   final HelpdeskRepository? helpdeskRepository;
   final LettersRepository? lettersRepository;
   final RecruitmentRepository? recruitmentRepository;
@@ -52,6 +56,8 @@ class ManagerEngageScreen extends StatefulWidget {
     this.chatService,
     this.chatRepository,
     this.tasksRepository,
+    this.managerRepository,
+    this.employeeRepository,
     this.helpdeskRepository,
     this.lettersRepository,
     this.recruitmentRepository,
@@ -72,6 +78,10 @@ class _ManagerEngageScreenState extends State<ManagerEngageScreen>
       widget.chatRepository ?? ChatRepository();
   late final TasksRepository _tasks =
       widget.tasksRepository ?? TasksRepository();
+  late final ManagerRepository _manager =
+      widget.managerRepository ?? ManagerRepository();
+  late final EmployeeRepository _employees =
+      widget.employeeRepository ?? EmployeeRepository();
   late final HelpdeskRepository _helpdesk =
       widget.helpdeskRepository ?? HelpdeskRepository();
   late final LettersRepository _letters =
@@ -148,8 +158,12 @@ class _ManagerEngageScreenState extends State<ManagerEngageScreen>
             chat: _chat,
             chatRepo: _chatRepo,
           ),
-          CompanyDirectoryTab(chat: _chatRepo),
-          TasksChecklistsTab(tasks: _tasks),
+          CompanyDirectoryTab(
+            chat: _chatRepo,
+            manager: _manager,
+            employees: _employees,
+          ),
+          TasksChecklistsTab(tasks: _tasks, manager: _manager),
           TicketsTab(helpdesk: _helpdesk),
           LettersDocumentsTab(letters: _letters),
           InternalOpportunitiesTab(recruitment: _recruitment),
@@ -438,7 +452,7 @@ class _MessagesTabState extends State<_MessagesTab> {
               leading: CircleAvatar(
                 backgroundColor: Colors.blue.shade50,
                 child: Text(
-                  conv.title[0],
+                  conv.title.isEmpty ? '?' : conv.title[0],
                   style: const TextStyle(
                     color: Color(0xFF1E90FF),
                     fontWeight: FontWeight.bold,
@@ -547,6 +561,8 @@ class _RepoListState extends State<_RepoList> {
 }
 
 // 🔵 ANNOUNCEMENTS: EngagementRepository.announcements() (drafts and inactive items stay filtered out there)
+bool _has(Object? v) => (v?.toString().trim() ?? '').isNotEmpty;
+
 class _AnnouncementsTab extends StatelessWidget {
   final EngagementRepository engagement;
   const _AnnouncementsTab({required this.engagement});
@@ -641,11 +657,16 @@ class _AnnouncementsTab extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      _priorityChip(ann['priority']?.toString()),
-                      const SizedBox(width: 8),
-                      _audienceChip(ann['audience_type']?.toString()),
-                      const SizedBox(width: 8),
-                      _categoryChip(ann['category']?.toString()),
+                      if (_has(ann['priority'])) ...[
+                        _priorityChip(ann['priority'].toString()),
+                        const SizedBox(width: 8),
+                      ],
+                      if (_has(ann['audience_type'])) ...[
+                        _audienceChip(ann['audience_type'].toString()),
+                        const SizedBox(width: 8),
+                      ],
+                      if (_has(ann['category']))
+                        _categoryChip(ann['category'].toString()),
                       const Spacer(),
                       if (created != null)
                         Text(
@@ -691,20 +712,18 @@ class _EventsTab extends StatelessWidget {
   final EngagementRepository engagement;
   const _EventsTab({required this.engagement});
 
-  DateTime _parseEventDate(dynamic date) =>
-      asDate(date)?.toLocal() ?? DateTime.now();
-
   @override
   Widget build(BuildContext context) {
     return _RepoList(
       load: engagement.events,
-      emptyText: "No upcoming events",
+      emptyText: "No events yet",
       builder: (context, events) => ListView.builder(
         padding: const EdgeInsets.all(20),
         itemCount: events.length,
         itemBuilder: (context, index) {
           final ev = events[index];
-          final start = _parseEventDate(ev['event_date']);
+          final start = asDate(ev['event_date'])?.toLocal();
+          final loc = ev['location']?.toString().trim() ?? '';
           return Container(
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(16),
@@ -725,7 +744,7 @@ class _EventsTab extends StatelessWidget {
                   child: Column(
                     children: [
                       Text(
-                        DateFormat('MMM').format(start),
+                        start == null ? '' : DateFormat('MMM').format(start),
                         style: const TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.bold,
@@ -733,7 +752,7 @@ class _EventsTab extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        DateFormat('dd').format(start),
+                        start == null ? '' : DateFormat('dd').format(start),
                         style: GoogleFonts.playfairDisplay(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
@@ -757,7 +776,11 @@ class _EventsTab extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        "${DateFormat('hh:mm a').format(start)} • ${ev['location'] ?? 'Online'}",
+                        [
+                          if (start != null)
+                            DateFormat('hh:mm a').format(start),
+                          if (loc.isNotEmpty) loc,
+                        ].join(' • '),
                         style: const TextStyle(
                           fontSize: 11,
                           color: Colors.grey,

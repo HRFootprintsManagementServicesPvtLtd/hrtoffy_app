@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/api/json_case.dart';
+import '../../repositories/approvals_repository.dart';
 import '../../repositories/benefits_repository.dart';
 import '../../repositories/employee_repository.dart';
 import '../../repositories/profile_repository.dart';
@@ -10,6 +11,7 @@ import '../../widgets/manager_drawer.dart';
 import '../../widgets/drawer_route.dart';
 import 'widgets/benefit_approvals_panel.dart';
 import 'widgets/benefit_claims_approvals.dart';
+import 'widgets/benefit_general_approvals_panel.dart';
 
 /// Shown for every action that has no verified AWS route yet (claim submission, ESI claims and eligibility).
 /// Nothing is requested for them and nothing is written.
@@ -23,7 +25,7 @@ const String kBenefitsLoadFailedMessage =
 ///
 /// Live: the signed-in user's own claims, the benefits catalog, the grade limit with the year-to-date total,
 /// their own insurance policies, and the team's ESI claim approvals ([BenefitApprovalsPanel]; the ESI Approvals badge is the
-/// real count, "-" while unknown; the general Approvals badge stays "-" because general benefit claims have no manager route).
+/// real count, "-" while unknown; the general Approvals badge is the other claims the caller may decide, "-" while unknown).
 /// Unavailable: Submit Claim, LTA Claim, ESI Claims and eligibility.
 class ManagerBenefitsScreen extends StatefulWidget {
   final String userEmail;
@@ -32,6 +34,7 @@ class ManagerBenefitsScreen extends StatefulWidget {
   final BenefitsRepository? benefitsRepository;
   final EmployeeRepository? employeeRepository;
   final ProfileRepository? profileRepository;
+  final ApprovalsRepository? approvalsRepository;
 
   const ManagerBenefitsScreen({
     super.key,
@@ -41,6 +44,7 @@ class ManagerBenefitsScreen extends StatefulWidget {
     this.benefitsRepository,
     this.employeeRepository,
     this.profileRepository,
+    this.approvalsRepository,
   });
 
   @override
@@ -54,6 +58,8 @@ class _ManagerBenefitsScreenState extends State<ManagerBenefitsScreen> {
       widget.employeeRepository ?? EmployeeRepository();
   late final ProfileRepository _profile =
       widget.profileRepository ?? ProfileRepository();
+  late final ApprovalsRepository _approvals =
+      widget.approvalsRepository ?? ApprovalsRepository();
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
@@ -97,6 +103,7 @@ class _ManagerBenefitsScreenState extends State<ManagerBenefitsScreen> {
       _fetchGradeLimit(grade),
       _fetchMyInsurance(),
       _fetchEsiPending(),
+      _fetchApprovalCount(),
     ]);
     if (mounted) setState(() => loading = false);
   }
@@ -149,9 +156,23 @@ class _ManagerBenefitsScreenState extends State<ManagerBenefitsScreen> {
     }
   }
 
+  /// Other (non-ESI) claims the caller may decide now; null while unknown or when it could not be determined.
+  int? approvalsPending;
+
+  Future<void> _fetchApprovalCount() async {
+    try {
+      approvalsPending = await BenefitGeneralApprovalsPanel.countActionable(
+        benefitsRepository: _benefits,
+        approvalsRepository: _approvals,
+      );
+    } catch (_) {
+      approvalsPending = null;
+    }
+  }
+
   Future<void> _backToOverview() async {
     setState(() => activeAction = 'none');
-    await _fetchEsiPending(); // a decision may have changed it
+    await Future.wait([_fetchEsiPending(), _fetchApprovalCount()]); // a decision may have changed them
     if (mounted) setState(() {});
   }
 
@@ -308,7 +329,8 @@ class _ManagerBenefitsScreenState extends State<ManagerBenefitsScreen> {
           Icons.fact_check_outlined,
           Colors.deepOrange,
           'approvals',
-          unknownBadge: true,
+          badge: approvalsPending,
+          unknownBadge: approvalsPending == null,
         ),
         _actionCard(
           "ESI Approvals",
@@ -483,11 +505,18 @@ class _ManagerBenefitsScreenState extends State<ManagerBenefitsScreen> {
     switch (activeAction) {
       case 'approvals':
         title = "Benefit Approvals";
-        child = BenefitClaimsApprovals(benefitsRepository: _benefits);
+        child = BenefitClaimsApprovals(
+          benefitsRepository: _benefits,
+          approvalsRepository: _approvals,
+          initialTab: 1,
+        );
         break;
       case 'esi_approvals':
         title = "ESI Approvals";
-        child = BenefitClaimsApprovals(benefitsRepository: _benefits);
+        child = BenefitClaimsApprovals(
+          benefitsRepository: _benefits,
+          approvalsRepository: _approvals,
+        );
         break;
       case 'esi_guide':
         title = "ESI Guide";

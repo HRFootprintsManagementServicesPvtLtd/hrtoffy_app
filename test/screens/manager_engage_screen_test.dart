@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hrms_app/repositories/chat_repository.dart';
+import 'package:hrms_app/repositories/employee_repository.dart';
 import 'package:hrms_app/repositories/engagement_repository.dart';
+import 'package:hrms_app/repositories/manager_repository.dart';
 import 'package:hrms_app/repositories/helpdesk_repository.dart';
 import 'package:hrms_app/repositories/letters_repository.dart';
 import 'package:hrms_app/repositories/recruitment_repository.dart';
@@ -11,6 +13,8 @@ import 'package:hrms_app/repositories/tasks_repository.dart';
 import 'package:hrms_app/screens/manager/manager_engage_screen.dart';
 import 'package:hrms_app/screens/manager/widgets/engage_tabs.dart';
 import 'package:hrms_app/screens/manager/widgets/manager_state_views.dart';
+import 'package:hrms_app/screens/manager/widgets/org_chart_view.dart';
+import 'package:hrms_app/screens/manager/widgets/team_tasks_view.dart';
 import 'package:hrms_app/services/chat_service.dart';
 
 import '../helpers/test_auth.dart';
@@ -38,6 +42,8 @@ Widget _screen(TestSession s) => MaterialApp(
     chatService: ChatService(repository: ChatRepository(auth: s.auth)),
     chatRepository: ChatRepository(auth: s.auth),
     tasksRepository: TasksRepository(auth: s.auth),
+    managerRepository: ManagerRepository(auth: s.auth),
+    employeeRepository: EmployeeRepository(auth: s.auth),
     helpdeskRepository: HelpdeskRepository(auth: s.auth),
     lettersRepository: LettersRepository(auth: s.auth),
     recruitmentRepository: RecruitmentRepository(auth: s.auth),
@@ -55,12 +61,38 @@ final _forbidden = jsonResponse({
 
 const _otherEmployee = '99999999-9999-9999-9999-999999999999';
 
+Map<String, dynamic> _p(
+  String id,
+  String name,
+  String designation,
+  String dept,
+  String manager, {
+  String status = 'active',
+}) => {
+  'id': id,
+  'employeeId': 'EMP-$id',
+  'fullName': name,
+  'designation': designation,
+  'department': dept,
+  'managerId': manager,
+  'managerName': 'Boss',
+  'status': status,
+};
+
 /// Mutable server state for one test.
 class _Server {
   Set<String> failing = {};
   Set<String> forbidden = {};
   bool recognitionPostForbidden = false;
   bool applyFails = false;
+  bool noBadges = false;
+  List<Map<String, dynamic>> team = [
+    _p('e3', 'Ravi Kumar', 'Executive', 'Sales', testEmployeeId),
+    _p(_otherEmployee, 'Priya Shah', 'Accountant', 'Finance', testEmployeeId),
+    _p('e5', 'Sunil Rao', 'Intern', 'Sales', 'e3'),
+    _p('e6', 'Gone Person', 'Lead', 'Ops', testEmployeeId, status: 'inactive'),
+    _p('e7', 'Deep Report', 'Analyst', 'Ops', 'e6'),
+  ];
   Set<String> applied = {};
   List<Map<String, dynamic>> recognitions = [
     {
@@ -221,6 +253,7 @@ Future<TestSession> _session(
           'total': srv.recognitions.length,
         });
       case '$_org/engagement/recognition/badges':
+        if (srv.noBadges) return ok([]);
         return ok([
           {'id': 'b1', 'badge_name': 'Team Player', 'points_value': 10},
           {'id': 'b2', 'badge_name': 'Star Performer', 'points_value': 25},
@@ -234,6 +267,19 @@ Future<TestSession> _session(
             {'id': 'e4', 'full_name': 'Neha Jain', 'yearsCompleted': 3},
           ],
         });
+      case '$_org/employees/me':
+        return ok({
+          'id': testEmployeeId,
+          'fullName': 'Me Myself',
+          'designation': 'Manager',
+          'department': 'Ops',
+          'managerName': 'Big Boss',
+        });
+      case '$_org/employees':
+        if (req.url.queryParameters.containsKey('managerId')) {
+          return ok({'items': srv.team, 'total': srv.team.length});
+        }
+        return ok({'items': [], 'total': 0});
       case '$_org/tasks':
         return ok({
           'items': [
@@ -252,13 +298,32 @@ Future<TestSession> _session(
               'id': 'ta2',
               'employee_id': _otherEmployee,
               'status': 'pending',
+              'due_date': '2026-11-05',
               'task': {
                 'task_title': 'Report member task',
                 'task_type': 'general',
               },
             },
+            {
+              'id': 'ta3',
+              'employee_id': 'e3',
+              'status': 'completed',
+              'task': {'task_title': 'Ravi finished task'},
+            },
+            {
+              'id': 'ta4',
+              'employee_id': 'e5',
+              'status': 'in_progress',
+              'task': {'task_title': 'Sunil running task'},
+            },
+            {
+              'id': 'ta5',
+              'employee_id': 'stranger',
+              'status': 'pending',
+              'task': {'task_title': 'Stranger task'},
+            },
           ],
-          'total': 2,
+          'total': 5,
         });
       case '$_org/helpdesk/tickets':
         return ok({
@@ -448,7 +513,8 @@ void main() {
 
       await tester.tap(find.text('Org Chart'));
       await _settle(tester);
-      expect(find.text("The org chart isn't available yet"), findsOneWidget);
+      expect(find.text("The org chart isn't available yet"), findsNothing);
+      expect(find.text(kOrgChartCaption), findsOneWidget);
       expect(s.requests.every((r) => r.method == 'GET'), isTrue);
     },
   );
@@ -469,7 +535,8 @@ void main() {
 
       await tester.tap(find.text('Manage Tasks'));
       await _settle(tester);
-      expect(find.text("Managing tasks isn't available yet"), findsOneWidget);
+      expect(find.text("Managing tasks isn't available yet"), findsNothing);
+      expect(find.text('Ravi finished task'), findsOneWidget);
     },
   );
 
@@ -673,6 +740,110 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Org chart: tree by manager_id, inactive omitted, expand/collapse',
+    (tester) async {
+      final (_, s) = await _open(tester);
+      await _tapSub(tester, 'Company Directory');
+      await tester.tap(find.text('Org Chart'));
+      await _settle(tester);
+      expect(find.text('Your reporting structure'), findsOneWidget);
+      expect(find.text('Big Boss'), findsOneWidget);
+      expect(find.text('Me Myself'), findsOneWidget);
+      expect(find.text('Ravi Kumar'), findsOneWidget);
+      expect(find.text('Priya Shah'), findsOneWidget);
+      expect(find.text('Executive • Sales'), findsOneWidget);
+      expect(find.text('Gone Person'), findsNothing);
+      expect(find.text('Deep Report'), findsOneWidget);
+      expect(find.text('Sunil Rao'), findsNothing);
+      await tester.tap(find.text('Ravi Kumar'));
+      await _settle(tester);
+      expect(find.text('Sunil Rao'), findsOneWidget);
+      await tester.tap(find.text('Ravi Kumar'));
+      await _settle(tester);
+      expect(find.text('Sunil Rao'), findsNothing);
+      expect(s.requests.every((r) => r.method == 'GET'), isTrue);
+    },
+  );
+
+  testWidgets('Org chart: empty state', (tester) async {
+    await _open(tester, setup: (s) => s.team = []);
+    await _tapSub(tester, 'Company Directory');
+    await tester.tap(find.text('Org Chart'));
+    await _settle(tester);
+    expect(find.text(kOrgChartEmptyMessage), findsOneWidget);
+  });
+
+  testWidgets('Org chart: failure shows a fixed message with retry', (
+    tester,
+  ) async {
+    await _open(tester, setup: (s) => s.failing = {'$_org/employees'});
+    await _tapSub(tester, 'Company Directory');
+    await tester.tap(find.text('Org Chart'));
+    await _settle(tester);
+    expect(find.text(kManagerLoadFailedMessage), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(find.textContaining('exploded'), findsNothing);
+  });
+
+  test('buildOrgTree: only active people, nested by manager, cycles end', () {
+    final rows = [
+      _p('a', 'A', '', '', 'me'),
+      _p('b', 'B', '', '', 'a'),
+      _p('d', 'D', '', '', 'a', status: 'inactive'),
+      _p('x', 'X', '', '', 'y'),
+      _p('y', 'Y', '', '', 'x'),
+    ].map((m) => {...m, 'manager_id': m['managerId']}).toList();
+    final top = buildOrgTree(rows, 'me');
+    expect(top.single.id, 'a');
+    expect(top.single.children.map((n) => n.id), ['b']);
+  });
+
+  testWidgets('Manage Tasks: grouped by person, summary, filters, read only', (
+    tester,
+  ) async {
+    final (_, s) = await _open(tester);
+    await _tapSub(tester, 'Tasks & Checklists');
+    await tester.tap(find.text('Manage Tasks'));
+    await _settle(tester);
+    expect(find.text('2 open / 1 done'), findsOneWidget);
+    expect(find.text('Report member task'), findsOneWidget);
+    expect(find.text('Due 05 Nov 2026'), findsOneWidget);
+    expect(find.text('Priya Shah'), findsOneWidget);
+    expect(find.text('Stranger task'), findsNothing);
+
+    await tester.tap(find.text('Completed'));
+    await _settle(tester);
+    expect(find.text('Ravi finished task'), findsOneWidget);
+    expect(find.text('Report member task'), findsNothing);
+    await tester.tap(find.text('Open'));
+    await _settle(tester);
+    expect(find.text('Ravi finished task'), findsNothing);
+    expect(find.text('Sunil running task'), findsOneWidget);
+    expect(s.requests.every((r) => r.method == 'GET'), isTrue);
+  });
+
+  testWidgets('Manage Tasks: empty state', (tester) async {
+    await _open(tester, setup: (s) => s.team = []);
+    await _tapSub(tester, 'Tasks & Checklists');
+    await tester.tap(find.text('Manage Tasks'));
+    await _settle(tester);
+    expect(find.text(kTeamTasksEmptyMessage), findsOneWidget);
+  });
+
+  testWidgets('Give Recognition with no badges shows the message, no form', (
+    tester,
+  ) async {
+    final (_, s) = await _open(tester, setup: (s) => s.noBadges = true);
+    await _tapSub(tester, 'Recognition');
+    await tester.tap(find.byType(FloatingActionButton));
+    await _settle(tester);
+    expect(find.text(kNoRecognitionBadgesMessage), findsOneWidget);
+    expect(find.text('Send Recognition'), findsNothing);
+    expect(find.byType(DropdownButtonFormField<String>), findsNothing);
+    expect(s.requests.where((r) => r.method == 'POST'), isEmpty);
+  });
+
   group('403 shows "Not available for your role" for just that part', () {
     final cases = {
       'Company Directory': '$_org/chat/employees',
@@ -753,6 +924,8 @@ void main() {
         'lib/screens/manager/manager_engage_screen.dart',
         'lib/screens/manager/widgets/engage_tabs.dart',
         'lib/screens/manager/widgets/manager_state_views.dart',
+        'lib/screens/manager/widgets/org_chart_view.dart',
+        'lib/screens/manager/widgets/team_tasks_view.dart',
       ];
       for (final f in files) {
         final src = File(f).readAsStringSync();

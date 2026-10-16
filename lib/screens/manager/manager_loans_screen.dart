@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/api/json_case.dart';
+import '../../repositories/approvals_repository.dart';
 import '../../repositories/employee_repository.dart';
 import '../../repositories/loans_repository.dart';
 import '../loans_advances_screens.dart'
@@ -32,7 +33,7 @@ String loanMoney(dynamic v) {
 /// Manager loans hub.
 ///
 /// Live: the signed-in user's OWN loans, EMI schedule, grade loan limit and the utilization against it, Apply for Loan
-/// (`POST /loans/request`), and Approvals ([LoanApprovalsPanel]; its badge counts the team's open requests, "-" while unknown).
+/// (`POST /loans/request`), and Approvals ([LoanApprovalsPanel]; its badge counts the requests the caller may decide now, "-" while unknown).
 /// Unavailable: All Loans and HR Submit (HR-only, no verified route for managers).
 class ManagerLoansScreen extends StatefulWidget {
   final String userEmail;
@@ -40,6 +41,7 @@ class ManagerLoansScreen extends StatefulWidget {
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
   final LoansRepository? loansRepository;
   final EmployeeRepository? employeeRepository;
+  final ApprovalsRepository? approvalsRepository;
 
   const ManagerLoansScreen({
     super.key,
@@ -48,6 +50,7 @@ class ManagerLoansScreen extends StatefulWidget {
     required this.fetchHrmsContext,
     this.loansRepository,
     this.employeeRepository,
+    this.approvalsRepository,
   });
 
   @override
@@ -59,6 +62,8 @@ class _ManagerLoansScreenState extends State<ManagerLoansScreen> {
       widget.loansRepository ?? LoansRepository();
   late final EmployeeRepository _employees =
       widget.employeeRepository ?? EmployeeRepository();
+  late final ApprovalsRepository _approvals =
+      widget.approvalsRepository ?? ApprovalsRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   String activeAction =
@@ -72,7 +77,7 @@ class _ManagerLoansScreenState extends State<ManagerLoansScreen> {
   /// The grade's loan limit; null when unknown (no grade, no limit row, not readable, or a failed lookup).
   double? loanLimit;
 
-  /// Open (pending or manager_approved) loan requests of the team; null while unknown or when the list could not be loaded.
+  /// Loan requests the caller may decide now (row-meta); null while unknown or when it could not be determined.
   int? pendingApprovals;
 
   @override
@@ -112,8 +117,10 @@ class _ManagerLoansScreenState extends State<ManagerLoansScreen> {
 
   Future<void> _fetchApprovalCount() async {
     try {
-      final rows = await _loansRepo.approvalLoans();
-      pendingApprovals = rows.where(LoansRepository.isOpen).length;
+      pendingApprovals = await LoanApprovalsPanel.countActionable(
+        loansRepository: _loansRepo,
+        approvalsRepository: _approvals,
+      );
     } catch (_) {
       pendingApprovals = null;
     }
@@ -524,7 +531,10 @@ class _ManagerLoansScreenState extends State<ManagerLoansScreen> {
         break;
       case 'approvals':
         title = "Loan Approvals";
-        child = LoanApprovalsPanel(loansRepository: _loansRepo);
+        child = LoanApprovalsPanel(
+          loansRepository: _loansRepo,
+          approvalsRepository: _approvals,
+        );
         break;
       case 'all_loans':
         title = "All Loans";

@@ -6,17 +6,23 @@ import '../../../core/api/api_client.dart';
 import '../../../core/api/json_case.dart';
 import '../../../repositories/chat_repository.dart';
 import '../../../repositories/engagement_repository.dart';
+import '../../../repositories/employee_repository.dart';
 import '../../../repositories/helpdesk_repository.dart';
+import '../../../repositories/manager_repository.dart';
 import '../../../repositories/letters_repository.dart';
 import '../../../repositories/recruitment_repository.dart';
 import '../../../repositories/tasks_repository.dart';
 import 'manager_state_views.dart';
+import 'org_chart_view.dart';
+import 'team_tasks_view.dart';
 
 const Color _blue = Color(0xFF1E90FF);
 
 /// Shown when giving recognition is refused (403) or the server cannot take it right now.
 const String kRecognitionNotAllowedMessage =
     "You can't give recognition right now.";
+const String kNoRecognitionBadgesMessage =
+    'No recognition badges are set up for your organisation yet. Ask HR to add some.';
 const String kRecognitionFailedMessage =
     "Couldn't send the recognition. Please try again.";
 
@@ -76,9 +82,16 @@ String _dateText(dynamic v, [String pattern = 'dd MMM yyyy']) {
 /// The people the caller can reach: `GET /chat/employees` (active colleagues the organization's chat scope allows).
 /// That is the only verified directory the caller's role may read; it is not guaranteed to be every employee.
 class CompanyDirectoryTab extends StatefulWidget {
-  const CompanyDirectoryTab({super.key, required this.chat});
+  const CompanyDirectoryTab({
+    super.key,
+    required this.chat,
+    required this.manager,
+    required this.employees,
+  });
 
   final ChatRepository chat;
+  final ManagerRepository manager;
+  final EmployeeRepository employees;
 
   @override
   State<CompanyDirectoryTab> createState() => _CompanyDirectoryTabState();
@@ -153,9 +166,9 @@ class _CompanyDirectoryTabState extends State<CompanyDirectoryTab> {
         ),
         Expanded(
           child: showOrgChart
-              ? const ManagerInfoState(
-                  "The org chart isn't available yet",
-                  icon: Icons.account_tree_outlined,
+              ? OrgChartView(
+                  manager: widget.manager,
+                  employees: widget.employees,
                 )
               : _directory(),
         ),
@@ -281,9 +294,14 @@ class _CompanyDirectoryTabState extends State<CompanyDirectoryTab> {
 // ---------------------------------------------------------------------------
 
 class TasksChecklistsTab extends StatefulWidget {
-  const TasksChecklistsTab({super.key, required this.tasks});
+  const TasksChecklistsTab({
+    super.key,
+    required this.tasks,
+    required this.manager,
+  });
 
   final TasksRepository tasks;
+  final ManagerRepository manager;
 
   @override
   State<TasksChecklistsTab> createState() => _TasksChecklistsTabState();
@@ -347,7 +365,7 @@ class _TasksChecklistsTabState extends State<TasksChecklistsTab>
                   itemBuilder: (context, i) => _taskCard(rows[i]),
                 ),
               ),
-              const ManagerInfoState("Managing tasks isn't available yet"),
+              TeamTasksView(tasks: widget.tasks, manager: widget.manager),
             ],
           ),
         ),
@@ -1050,7 +1068,7 @@ class _CelebrationsStripState extends State<_CelebrationsStrip> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            m['full_name'].toString(),
+                            m['full_name']?.toString() ?? '',
                             style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.bold,
@@ -1203,6 +1221,33 @@ class _GiveRecognitionDialogState extends State<GiveRecognitionDialog> {
       body = Padding(
         padding: const EdgeInsets.all(12),
         child: Text(loadError!, textAlign: TextAlign.center),
+      );
+    } else if (data!.badges.isEmpty) {
+      body = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(kNoRecognitionBadgesMessage, textAlign: TextAlign.center),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Close'),
+          ),
+        ],
+      );
+    } else if (data!.people.isEmpty) {
+      body = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'There is nobody to recognise yet.',
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Close'),
+          ),
+        ],
       );
     } else {
       final d = data!;

@@ -19,4 +19,16 @@ class TasksRepository extends BaseRepository {
       data,
     ).where((a) => a['employee_id']?.toString() == me).toList();
   }
+
+  /// `GET /organizations/:orgId/tasks` (read only) -> `{items, total}`. For a manager the server returns the
+  /// assignments of the caller and everyone in their reporting tree (`visibleAssigneeIds` in tasks.service.ts); HR
+  /// would get everyone. The caller's own assignments are left out here (they are "My Tasks"); the screen narrows the
+  /// rest to the manager's team. Each row: `employee_id`, `status`, `due_date` (`yyyy-MM-dd`), `task` (`task_title`...).
+  Future<List<Map<String, dynamic>>> teamTasks() async {
+    final me = employeeId;
+    final data = await api.get(orgPath('/tasks'));
+    return asMapList(
+      data,
+    ).where((a) => a['employee_id']?.toString() != me).toList();
+  }
 }

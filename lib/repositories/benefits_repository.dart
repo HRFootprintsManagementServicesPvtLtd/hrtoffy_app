@@ -169,6 +169,65 @@ class BenefitsRepository extends BaseRepository {
     );
   }
 
+  // ---------------------------------------------------------------- manager general (non-ESI) approvals
+
+  /// `GET /organizations/:orgId/benefits/claims` (NO `employeeId`; `benefits.service.ts` `listBenefitClaims`): a manager gets
+  /// their own claims plus their reporting tree's, every status, as `{items, total}`. ESI claims (`is_esi_claim == true`) and
+  /// the caller's own claims are left out. Each row is the normalized claim plus `employee`
+  /// (`{full_name, email, employee_id, department}` from the server's employee relation, or an empty map) and
+  /// `benefit_name` (from `benefits_catalog`). Newest first.
+  Future<List<Map<String, dynamic>>> generalApprovalClaims() async {
+    final me = employeeId;
+    final data = await api.get(orgPath('/benefits/claims'));
+    final rows = <Map<String, dynamic>>[];
+    for (final raw in asMapList(data)) {
+      final m = _normalizeClaim(raw);
+      if (m['is_esi_claim'] == true) continue;
+      if (m['employee_id']?.toString() == me) continue;
+      Map? rel;
+      for (final e in m.entries) {
+        if (e.key.startsWith('employee_records') && e.value is Map) {
+          rel = e.value as Map;
+          break;
+        }
+      }
+      m['employee'] = rel == null
+          ? <String, dynamic>{}
+          : Map<String, dynamic>.from(rel);
+      final cat = m['benefits_catalog'];
+      if (cat is Map && cat['benefit_name'] != null) {
+        m['benefit_name'] = cat['benefit_name'].toString();
+      }
+      rows.add(m);
+    }
+    rows.sort(
+      (a, b) => (asDate(b['created_at']) ?? asDate(b['claim_date']) ?? DateTime(0))
+          .compareTo(
+            asDate(a['created_at']) ?? asDate(a['claim_date']) ?? DateTime(0),
+          ),
+    );
+    return rows;
+  }
+
+  /// `POST /organizations/:orgId/benefits/claims/:claimId/approve` with `{approvedAmount}` (required by the service, which
+  /// passes it to the approval engine as `approved_amount`; the caller defaults it to the claimed amount).
+  Future<void> approveClaim(String claimId, {required num approvedAmount}) async {
+    await api.post(
+      orgPath('/benefits/claims/${Uri.encodeComponent(claimId)}/approve'),
+      body: {'approvedAmount': approvedAmount},
+    );
+  }
+
+  /// `POST /organizations/:orgId/benefits/claims/:claimId/reject` with `{comments}` (the route reads `comments`; a JSON
+  /// object is always sent because the handler destructures the body).
+  Future<void> rejectClaim(String claimId, {String? comments}) async {
+    final c = comments?.trim() ?? '';
+    await api.post(
+      orgPath('/benefits/claims/${Uri.encodeComponent(claimId)}/reject'),
+      body: {if (c.isNotEmpty) 'comments': c},
+    );
+  }
+
   /// Friendly text for a failed decision or approvals list.
   static String decisionErrorText(Object e) => approvalErrorText(
     e,

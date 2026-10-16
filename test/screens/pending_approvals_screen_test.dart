@@ -7,6 +7,7 @@ import 'package:hrms_app/repositories/benefits_repository.dart';
 import 'package:hrms_app/repositories/loans_repository.dart';
 import 'package:hrms_app/repositories/travel_repository.dart';
 import 'package:hrms_app/screens/manager/widgets/benefit_claims_approvals.dart';
+import 'package:hrms_app/screens/manager/widgets/leave_approvals_panel.dart';
 import 'package:hrms_app/screens/manager/widgets/loan_approvals_panel.dart';
 import 'package:hrms_app/screens/manager/widgets/travel_approvals_panel.dart';
 import 'package:hrms_app/screens/manager/pending_approvals_screen.dart';
@@ -44,31 +45,43 @@ http.Response _fail(int status) => jsonResponse({
   'error': {'message': 'db exploded at https://api.hrtoffy.in'},
 }, status);
 
-Future<TestSession> _session({
-  Map<String, dynamic>? counts = const {
-    'approvals-requests-leaves': 3,
-    'approvals-regularization': 1,
+List<Map<String, dynamic>> _defaultLeaves = [
+  {
+    'id': 'r1',
+    'employee_id': 'emp-1',
+    'leave_type': 'sick_leave',
+    'from_date': '2026-10-20T00:00:00.000Z',
+    'to_date': '2026-10-21T00:00:00.000Z',
+    'total_days': '2.0',
+    'status': 'pending',
+    'employee_records': {'full_name': 'Dev One', 'employee_id': 'E1'},
   },
+];
+
+Future<TestSession> _session({
+  Map<String, dynamic>? counts = const {'approvals-regularization': 1},
+  List<Map<String, dynamic>>? leaves,
+  bool leavesFail = false,
+  bool metaFail = false,
+  List<Map<String, dynamic>> loans = const [],
 }) => signedIn((req) async {
   switch (req.url.path) {
     case '$_org/dashboard/approval-counts':
       return counts == null ? _fail(500) : ok(counts);
-    case '$_org/approvals':
-      return ok({
-        'executions': [
-          {
-            'id': 'x1',
-            'module_name': 'leaves',
-            'record_id': 'r1',
-            'record': {
-              'employee_full_name': 'Dev One',
-              'employee_code': 'E1',
-              'leave_type': 'sick_leave',
-            },
-          },
-        ],
-        'total': 1,
-      });
+    case '$_org/leaves/team-applications':
+      if (leavesFail) return _fail(500);
+      final hist = req.url.queryParameters['status']!.startsWith('approved');
+      return ok(hist ? [] : (leaves ?? _defaultLeaves));
+    case '$_org/workflows/module/leaves/row-meta':
+      return metaFail
+          ? _fail(500)
+          : ok({
+              'r1': {
+                'executionFound': true,
+                'canApprove': true,
+                'requiredRole': 'manager',
+              },
+            });
     case '$_org/attendance/regularization-requests':
       return ok({
         'requests': [
@@ -92,9 +105,11 @@ Future<TestSession> _session({
         },
       ]);
   }
-  if (req.url.path == '$_org/loans') return ok({'items': [], 'total': 0});
+  if (req.url.path == '$_org/loans')
+    return ok({'items': loans, 'total': loans.length});
   if (req.url.path == '$_org/travel/claims') return ok([]);
   if (req.url.path == '$_org/benefits/esi/claims') return ok([]);
+  if (req.url.path == '$_org/benefits/claims') return ok([]);
   if (req.url.path.endsWith('/row-meta')) return ok({});
   return _fail(404);
 }, empRole: 'manager');
@@ -139,86 +154,71 @@ void main() {
   );
 
   testWidgets(
-    'badges: the server count for leaves and regularization, "-" for queues the server does not count for a manager',
+    'badges: leaves/loans/travel/benefits show what the caller may decide (a real 0 included), regularization the server count, the rest "-"',
     (tester) async {
       _tall(tester);
       final s = await _session();
       await tester.pumpWidget(_screen(s));
       await _settle(tester);
-      expect(_badge(tester, 'leaves'), '3');
+      expect(_badge(tester, 'leaves'), '1');
       expect(_badge(tester, 'regularization'), '1');
-      for (final tab in [
-        'overtime',
-        'loans',
-        'travel',
-        'general',
-        'benefits',
-      ]) {
+      expect(_badge(tester, 'loans'), '0');
+      expect(_badge(tester, 'travel'), '0');
+      expect(_badge(tester, 'benefits'), '0');
+      for (final tab in ['overtime', 'general']) {
         expect(_badge(tester, tab), kApprovalsCountUnknown, reason: tab);
       }
-      expect(s.apiCalls.map((r) => r.path), [
-        '$_org/dashboard/approval-counts',
-      ]);
     },
   );
 
   testWidgets(
-    'loans, benefits and travel badges show the server count when it sends one and "-" when it does not',
+    'a leave the caller may not decide is not counted: the badge is a real 0',
     (tester) async {
       _tall(tester);
       final s = await _session(
-        counts: {
-          'approvals-requests-leaves': 1,
-          'approvals-loans': 4,
-          'approvals-travel': 2,
-        },
+        leaves: [
+          {..._defaultLeaves.first, 'id': 'zz'},
+        ],
       );
       await tester.pumpWidget(_screen(s));
       await _settle(tester);
-      expect(_badge(tester, 'loans'), '4');
-      expect(_badge(tester, 'travel'), '2');
-      expect(_badge(tester, 'benefits'), kApprovalsCountUnknown);
+      expect(_badge(tester, 'leaves'), '0'); // row-meta has no answer for 'zz'
     },
   );
 
   testWidgets(
-    'a queue the server left out of the counts is a real 0 once it answered',
+    'a count that fails shows "-" (never 0) while the others still show (leave list down, then row-meta down)',
     (tester) async {
       _tall(tester);
-      final s = await _session(counts: {'approvals-requests-leaves': 2});
+      final s = await _session(leavesFail: true);
       await tester.pumpWidget(_screen(s));
       await _settle(tester);
-      expect(_badge(tester, 'leaves'), '2');
-      expect(_badge(tester, 'regularization'), '0');
+      expect(_badge(tester, 'leaves'), '-');
+      expect(_badge(tester, 'travel'), '0');
+      final m = await _session(metaFail: true);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpWidget(_screen(m));
+      await _settle(tester);
+      expect(_badge(tester, 'leaves'), '-');
     },
   );
 
   testWidgets(
-    'when counts cannot be read every badge shows "-", never 0, and no raw error appears',
+    'when counts cannot be read the server-count badge shows "-", never 0, and no raw error appears',
     (tester) async {
       _tall(tester);
-      final s = await _session(counts: null);
+      final s = await _session(counts: null, leavesFail: true);
       await tester.pumpWidget(_screen(s));
       await _settle(tester);
-      for (final tab in [
-        'leaves',
-        'regularization',
-        'overtime',
-        'loans',
-        'travel',
-        'general',
-        'benefits',
-      ]) {
-        expect(_badge(tester, tab), '-', reason: tab);
-      }
-      expect(find.text('0'), findsNothing);
+      expect(_badge(tester, 'regularization'), '-');
+      expect(_badge(tester, 'leaves'), '-');
       expect(find.textContaining('exploded'), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
 
   testWidgets(
-    'Leave Requests opens the inbox panel for leaves and back returns to the inbox and refreshes the counts',
+    'Leave Requests opens the leave panel and back returns to the inbox and refreshes the counts',
     (tester) async {
       _tall(tester);
       final s = await _session();
@@ -226,10 +226,11 @@ void main() {
       await _settle(tester);
       await tester.tap(find.text('Leave Requests'));
       await _settle(tester);
+      expect(find.byType(LeaveApprovalsPanel), findsOneWidget);
       expect(find.text('Leave Requests'), findsOneWidget); // app-bar title
       expect(find.text('Dev One'), findsOneWidget);
       expect(find.text('Sick leave'), findsOneWidget);
-      expect(find.byKey(const ValueKey('approve-x1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('approve-r1')), findsOneWidget);
       await tester.tap(find.byIcon(Icons.arrow_back).first);
       await _settle(tester);
       expect(find.text('Approvals'), findsOneWidget);
@@ -308,7 +309,7 @@ void main() {
         await tester.tap(find.byIcon(Icons.arrow_back).first);
         await _settle(tester);
       }
-      final bad = RegExp('/leaves/|hierarchy|reviewer-scope|/employees');
+      final bad = RegExp('hierarchy|reviewer-scope|/employees|/approvals\b');
       expect(s.apiCalls.where((r) => bad.hasMatch(r.path)), isEmpty);
       expect(
         s.apiCalls.where(

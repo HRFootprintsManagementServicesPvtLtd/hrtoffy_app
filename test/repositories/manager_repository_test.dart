@@ -52,6 +52,30 @@ void main() {
     );
 
     test(
+      'former employees (status other than active) are not part of the team',
+      () async {
+        final s = await signedIn((req) async {
+          if (req.url.queryParameters.containsKey('managerId')) {
+            return ok({
+              'items': [
+                {..._emp('d1', managerId: testEmployeeId), 'status': 'active'},
+                {
+                  ..._emp('d2', managerId: testEmployeeId),
+                  'status': 'inactive',
+                },
+              ],
+              'total': 2,
+            });
+          }
+          return ok({'items': [], 'total': 0});
+        });
+        final team = await ManagerRepository(auth: s.auth).team();
+        expect(team.direct.map((m) => m['id']), ['d1']);
+        expect(team.treeIds, ['d1']);
+      },
+    );
+
+    test(
       'a person who is both on the tree and a reviewee is listed once in "all"',
       () async {
         final s = await signedIn((req) async {

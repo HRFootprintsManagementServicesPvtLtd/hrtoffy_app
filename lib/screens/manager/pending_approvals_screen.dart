@@ -6,7 +6,7 @@ import '../../repositories/benefits_repository.dart';
 import '../../repositories/loans_repository.dart';
 import '../../repositories/travel_repository.dart';
 import 'widgets/benefit_claims_approvals.dart';
-import 'widgets/inbox_approvals_panel.dart';
+import 'widgets/leave_approvals_panel.dart';
 import 'widgets/loan_approvals_panel.dart';
 import 'widgets/overtime_approvals_panel.dart';
 import 'widgets/regularization_approvals_panel.dart';
@@ -60,6 +60,10 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
   Map<String, int>?
   _counts; // null until the server answered (and when it could not)
 
+  /// Rows the caller may decide now, per tab (leaves, loans, travel, benefits); a missing key is unknown or failed.
+  final Map<String, int> _actionable = {};
+  int _countsGeneration = 0;
+
   @override
   void initState() {
     super.initState();
@@ -67,12 +71,59 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
   }
 
   Future<void> _loadCounts() async {
-    try {
-      final c = await _repo.counts();
-      if (mounted) setState(() => _counts = c);
-    } catch (_) {
-      if (mounted) setState(() => _counts = null);
+    final gen = ++_countsGeneration;
+    Future<void> one(String tab, Future<int> Function() count) async {
+      try {
+        final n = await count();
+        if (mounted && gen == _countsGeneration) {
+          setState(() => _actionable[tab] = n);
+        }
+      } catch (_) {
+        if (mounted && gen == _countsGeneration) {
+          setState(() => _actionable.remove(tab));
+        }
+      }
     }
+
+    await Future.wait([
+      () async {
+        try {
+          final c = await _repo.counts();
+          if (mounted && gen == _countsGeneration) {
+            setState(() => _counts = c);
+          }
+        } catch (_) {
+          if (mounted && gen == _countsGeneration) {
+            setState(() => _counts = null);
+          }
+        }
+      }(),
+      one(
+        'leaves',
+        () => LeaveApprovalsPanel.countActionable(approvalsRepository: _repo),
+      ),
+      one(
+        'loans',
+        () => LoanApprovalsPanel.countActionable(
+          loansRepository: widget.loansRepository,
+          approvalsRepository: _repo,
+        ),
+      ),
+      one(
+        'travel',
+        () => TravelApprovalsPanel.countActionable(
+          travelRepository: widget.travelRepository,
+          approvalsRepository: _repo,
+        ),
+      ),
+      one(
+        'benefits',
+        () => BenefitClaimsApprovals.countActionable(
+          benefitsRepository: widget.benefitsRepository,
+          approvalsRepository: _repo,
+        ),
+      ),
+    ]);
   }
 
   void _open(String? tab) {
@@ -80,28 +131,25 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
     if (tab == null) _loadCounts(); // a decision may have changed the queues
   }
 
-  /// The badge text of a tile: the server's count for the queues it counts for a manager (a missing key is a real 0
-  /// once the server has answered), "-" for everything else.
+  /// The badge text of a tile: for leaves, loans, travel and benefits the number of rows the caller may decide now (the
+  /// panel's own count; "-" when it could not be read), for regularization the server's count (a missing key is a real 0
+  /// once the server has answered), "-" for everything else. Never a made-up 0.
   String _badge(String tab) {
-    final c = _counts;
-    if (c == null) return kApprovalsCountUnknown;
     switch (tab) {
       case 'leaves':
-        return '${c[kApprovalsLeavesCountKey] ?? 0}';
-      case 'regularization':
-        return '${c[kApprovalsRegularizationCountKey] ?? 0}';
       case 'loans':
-        return _present(c[kApprovalsLoansCountKey]);
-      case 'benefits':
-        return _present(c[kApprovalsBenefitsCountKey]);
       case 'travel':
-        return _present(c[kApprovalsTravelCountKey]);
+      case 'benefits':
+        final n = _actionable[tab];
+        return n == null ? kApprovalsCountUnknown : '$n';
+      case 'regularization':
+        final c = _counts;
+        if (c == null) return kApprovalsCountUnknown;
+        return '${c[kApprovalsRegularizationCountKey] ?? 0}';
       default:
         return kApprovalsCountUnknown;
     }
   }
-
-  String _present(int? n) => n == null ? kApprovalsCountUnknown : '$n';
 
   @override
   Widget build(BuildContext context) {
@@ -138,7 +186,7 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
   Widget _detail(String tab) {
     switch (tab) {
       case 'leaves':
-        return InboxApprovalsPanel(module: 'leaves', repository: _repo);
+        return LeaveApprovalsPanel(approvalsRepository: _repo);
       case 'regularization':
         return RegularizationApprovalsPanel(
           repository: _repo,
@@ -150,9 +198,15 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
           onBack: () => _open(null),
         );
       case 'loans':
-        return LoanApprovalsPanel(loansRepository: widget.loansRepository);
+        return LoanApprovalsPanel(
+          loansRepository: widget.loansRepository,
+          approvalsRepository: _repo,
+        );
       case 'travel':
-        return TravelApprovalsPanel(travelRepository: widget.travelRepository);
+        return TravelApprovalsPanel(
+          travelRepository: widget.travelRepository,
+          approvalsRepository: _repo,
+        );
       case 'benefits':
         return BenefitClaimsApprovals(
           benefitsRepository: widget.benefitsRepository,

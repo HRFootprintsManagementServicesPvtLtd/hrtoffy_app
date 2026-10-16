@@ -346,6 +346,84 @@ class ApprovalsRepository extends BaseRepository {
     );
   }
 
+  // ----------------------------------------------------------------- leaves
+
+  /// Statuses of a leave application that still wait for a decision.
+  static const leaveWaitingStatuses =
+      'pending,manager_approved,reviewer_approved';
+
+  /// Statuses of a decided leave application (history).
+  static const leaveDecidedStatuses =
+      'approved,rejected,reviewer_rejected,cancelled';
+
+  /// `GET /organizations/:orgId/leaves/team-applications?status=` (time service): the leave applications of the caller's
+  /// team (never the caller's own for a manager), `{data: [...]}`, up to 500. Waiting: [leaveWaitingStatuses]; history:
+  /// [leaveDecidedStatuses]. Rows carry `employee_id`, `leave_type`, `from_date`, `to_date`, `total_days`, `reason`, `status`,
+  /// `manager_comments` and `employee_records {id, full_name, employee_id, department}`.
+  Future<List<Map<String, dynamic>>> leaveApplications({
+    required bool history,
+  }) async {
+    final data = await api.get(
+      orgPath('/leaves/team-applications'),
+      query: {'status': history ? leaveDecidedStatuses : leaveWaitingStatuses},
+    );
+    return _rows(data);
+  }
+
+  /// `PUT /organizations/:orgId/leaves/applications/:id` with `{status: 'approved'|'rejected', manager_comments}`. The
+  /// time service sends an open request's decision to the approval engine (`approval_decide`) as the caller: it never
+  /// writes the status itself (leaves.service.ts `updateLeaveApplication`, ENGINE_APPROVE_STATUSES / ENGINE_REJECT_STATUSES).
+  /// A rejection needs a reason, an approval may carry a note.
+  Future<void> decideLeave(
+    String applicationId, {
+    required bool approve,
+    String? comments,
+  }) async {
+    if (!approve) _needReason(comments ?? '');
+    await api.put(
+      orgPath('/leaves/applications/$applicationId'),
+      body: {
+        'status': approve ? 'approved' : 'rejected',
+        if (_has(comments)) 'manager_comments': comments!.trim(),
+      },
+    );
+  }
+
+  // --------------------------------------------------------------- expenses
+
+  /// `GET /organizations/:orgId/expenses` (no filter): for a manager the claims of the caller and of the reporting tree,
+  /// `{data: [...]}`. Rows carry `employee_id`, `status`, `amount`, `title`, `expense_date`, `category_id` and the claimant as
+  /// `employee_records {full_name, employee_id, department}` (under either of the server's names for it).
+  Future<List<Map<String, dynamic>>> teamExpenseClaims() async {
+    final data = await api.get(orgPath('/expenses'));
+    return _rows(data).map((m) {
+      if (m['employee_records'] is! Map) {
+        for (final e in m.entries) {
+          if (e.key.startsWith('employee_records_expense_claims') &&
+              e.value is Map) {
+            return {...m, 'employee_records': e.value};
+          }
+        }
+      }
+      return m;
+    }).toList();
+  }
+
+  /// `POST /organizations/:orgId/expenses/:id/approve` (the whole claimed amount; the body is an empty object). The route
+  /// refuses a claim of the caller's own and one outside the caller's reporting tree.
+  Future<void> approveExpense(String claimId) async {
+    await api.post(orgPath('/expenses/$claimId/approve'), body: {});
+  }
+
+  /// `POST /organizations/:orgId/expenses/:id/reject` with `{reason}`.
+  Future<void> rejectExpense(String claimId, {required String reason}) async {
+    _needReason(reason);
+    await api.post(
+      orgPath('/expenses/$claimId/reject'),
+      body: {'reason': reason.trim()},
+    );
+  }
+
   // ----------------------------------------------------------------- counts
 
   /// `GET /organizations/:orgId/dashboard/approval-counts`: only queues with a count above zero are in the answer. For a

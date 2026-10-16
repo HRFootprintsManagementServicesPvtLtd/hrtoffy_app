@@ -429,13 +429,15 @@ void main() {
         '.update(',
         '.upsert(',
         'approved_by',
-        '/leaves/applications',
         '/leaves/reviewer-scope',
         '/leaves/manager-hierarchy',
         'print(',
       ]) {
         expect(src.contains(banned), isFalse, reason: 'found "$banned"');
       }
+      // the one leave write is the decision route, sent through the approval engine by the time service
+      expect("orgPath('/leaves/applications".allMatches(src).length, 1);
+      expect(src.contains('api.put('), isTrue);
     },
   );
 }

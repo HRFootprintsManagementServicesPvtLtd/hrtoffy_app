@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hrms_app/repositories/approvals_repository.dart';
 import 'package:hrms_app/repositories/benefits_repository.dart';
 import 'package:hrms_app/repositories/employee_repository.dart';
 import 'package:hrms_app/repositories/profile_repository.dart';
@@ -29,6 +30,7 @@ Widget _screen(TestSession s) => MaterialApp(
         userData: const {'id': testEmployeeId, 'organization_id': testOrgId},
         fetchHrmsContext: () async => {},
         benefitsRepository: BenefitsRepository(auth: s.auth),
+        approvalsRepository: ApprovalsRepository(auth: s.auth),
         employeeRepository: EmployeeRepository(auth: s.auth),
         profileRepository: ProfileRepository(auth: s.auth),
       ),
@@ -67,7 +69,20 @@ Map<String, dynamic> _esi(String id, String name, {String status = 'pending'}) =
       'created_at': '2026-09-06T09:00:00.000Z',
     };
 
+Map<String, dynamic> _team(String id, String name, {String status = 'pending'}) => {
+      'id': id,
+      'employee_id': 'emp-',
+      'description': 'Gym',
+      'claimed_amount': '900.00',
+      'status': status,
+      'claim_date': '2026-10-01T00:00:00.000Z',
+      'is_esi_claim': false,
+      'benefits_catalog': {'benefit_name': 'Wellness'},
+      'employee_records_benefit_claims_employee_idToemployee_records': {'full_name': name, 'employee_id': 'E-'},
+    };
+
 Future<TestSession> _session({
+  bool failMeta = false,
   Set<String> failing = const {},
   List<Map<String, dynamic>>? esi,
   List<Map<String, dynamic>>? claims,
@@ -76,6 +91,13 @@ Future<TestSession> _session({
 }) {
   return signedIn((req) async {
     final path = req.url.path;
+    if (req.method == 'POST' && path == '$_org/workflows/module/benefits/row-meta') {
+      if (failMeta) return _boom;
+      return ok({
+        'g1': {'canApprove': true, 'requiredRole': 'manager'},
+        'g2': {'canApprove': false, 'requiredRole': 'hr_manager'},
+      });
+    }
     if (req.method == 'POST' && path.startsWith('$_org/benefits/esi/claims/')) return ok({'id': 'x', 'status': 'manager_approved'});
     if (req.method != 'GET') return jsonResponse({'success': false, 'error': {'message': 'unexpected write'}}, 500);
     if (failing.contains(path)) return _boom;
@@ -85,6 +107,10 @@ Future<TestSession> _session({
       case '$_org/employees/me':
         return ok({'id': testEmployeeId, 'organizationId': testOrgId, 'gradeCode': 'G3'});
       case '$_org/benefits/claims':
+        if (!req.url.queryParameters.containsKey('employeeId')) {
+          final t = [_team('g1', 'Gina Gym'), _team('g2', 'Hari Hall')];
+          return ok({'items': t, 'total': t.length});
+        }
         final rows = claims ?? [_claim('c1', 'Glasses'), _claim('c2', 'Dental check', claimed: '800.00', approved: '750.00', status: 'approved', name: 'Dental')];
         return ok({'items': rows, 'total': rows.length});
       case '$_org/benefits/catalog':
@@ -130,11 +156,13 @@ void main() {
       'GET $_org/employees/me',
       'GET $_org/benefits/claims',
       'GET $_org/benefits/esi/claims',
+      'POST $_org/workflows/module/benefits/row-meta',
       'GET $_org/benefits/catalog',
       'GET $_org/grade-structures/limits/G3',
       'GET $_org/insurance/policies',
     });
-    expect(s.requests.firstWhere((r) => r.path.endsWith('/benefits/claims')).query, {'employeeId': testEmployeeId});
+    final claimQueries = s.requests.where((r) => r.method == 'GET' && r.path.endsWith('/benefits/claims')).map((r) => r.query).toList();
+    expect(claimQueries, containsAll([{'employeeId': testEmployeeId}, <String, String>{}])); // own list, and the team list for the badge
     expect(s.requests.firstWhere((r) => r.path.endsWith('/benefits/esi/claims')).query, isEmpty); // the approvals queue is not own-scoped
 
     await _open(tester, 'My Benefits');
@@ -191,7 +219,7 @@ void main() {
       await tester.tap(find.text('Back to overview'));
       await _settle(tester);
     }
-    expect(s.requests.skip(before).every((r) => r.method == 'GET' && r.path.endsWith('/benefits/esi/claims')), isTrue); // only the badge refresh
+    expect(s.requests.skip(before).every((r) => (r.method == 'GET' && r.path.endsWith('/benefits/esi/claims')) || (r.method == 'GET' && r.path.endsWith('/benefits/claims')) || r.path.endsWith('/row-meta')), isTrue); // only the badge refresh
   });
 
   testWidgets('ESI Approvals badge is the real count; the general Approvals badge stays "-"; never a 0', (tester) async {
@@ -200,7 +228,8 @@ void main() {
     await tester.pumpWidget(_screen(s));
     await _settle(tester);
     expect(find.text('2'), findsOneWidget); // two pending ESI claims
-    expect(find.text('-'), findsOneWidget); // general benefit approvals have no route
+    expect(find.text('1'), findsOneWidget); // one general claim the engine lets the caller decide (the other waits for HR)
+    expect(find.text('-'), findsNothing);
     expect(find.text('0'), findsNothing);
   });
 
@@ -209,14 +238,23 @@ void main() {
     final f = await _session(failing: {'$_org/benefits/esi/claims'});
     await tester.pumpWidget(_screen(f));
     await _settle(tester);
-    expect(find.text('-'), findsNWidgets(2));
+    expect(find.text('-'), findsOneWidget); // ESI unknown; the general badge is still 1
+    expect(find.text('1'), findsOneWidget);
+    expect(find.text('0'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+    final m = await _session(failMeta: true);
+    await tester.pumpWidget(_screen(m));
+    await _settle(tester);
+    expect(find.text('-'), findsOneWidget); // the engine answer failed: unknown, never 0
+    expect(find.text('2'), findsOneWidget);
     expect(find.text('0'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
     final e = await _session(esi: []);
     await tester.pumpWidget(_screen(e));
     await _settle(tester);
-    expect(find.text('-'), findsOneWidget);
+    expect(find.text('-'), findsNothing);
     expect(find.text('0'), findsNothing);
   });
 
@@ -227,15 +265,20 @@ void main() {
     await _settle(tester);
     for (final card in ['ESI Approvals', 'Approvals']) {
       await _open(tester, card);
-      expect(find.text('Asha Rao'), findsOneWidget, reason: card);
-      expect(find.text('Ben Roy'), findsOneWidget, reason: card);
+      if (card == 'ESI Approvals') {
+        expect(find.text('Asha Rao'), findsOneWidget, reason: card);
+        expect(find.text('Ben Roy'), findsOneWidget, reason: card);
+      } else {
+        expect(find.text('Needs my action (1)'), findsOneWidget, reason: card);
+        expect(find.text('Gina Gym'), findsOneWidget, reason: card);
+      }
       expect(find.text('ESI claims'), findsOneWidget, reason: card);
       expect(find.text('Other claims'), findsOneWidget, reason: card);
       expect(find.text(kBenefitsUnavailableMessage), findsNothing);
       await tester.tap(find.text('Back to overview'));
       await _settle(tester);
     }
-    expect(s.requests.every((r) => r.method == 'GET'), isTrue); // opening decides nothing
+    expect(s.requests.every((r) => r.method == 'GET' || r.path.endsWith('/row-meta')), isTrue); // opening decides nothing
   });
 
   testWidgets('the ESI guide is static and no longer claims the user is (not) eligible', (tester) async {

@@ -6,7 +6,8 @@ import '../../core/api/json_case.dart';
 import '../../repositories/expense_repository.dart';
 import '../../widgets/manager_drawer.dart';
 import '../../widgets/drawer_route.dart';
-import 'widgets/inbox_approvals_panel.dart';
+import '../../repositories/approvals_repository.dart';
+import 'widgets/expense_approvals_panel.dart';
 
 /// Shown for every action that has no verified AWS route yet (submitting a claim, team approvals, the
 /// organization-wide list, claim line items and receipts). Nothing is requested for them and nothing is written.
@@ -26,6 +27,7 @@ class ManagerExpensesScreen extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Future<Map<String, dynamic>> Function() fetchHrmsContext;
   final ExpenseRepository? expenseRepository;
+  final ApprovalsRepository? approvalsRepository;
 
   const ManagerExpensesScreen({
     super.key,
@@ -33,6 +35,7 @@ class ManagerExpensesScreen extends StatefulWidget {
     required this.userData,
     required this.fetchHrmsContext,
     this.expenseRepository,
+    this.approvalsRepository,
   });
 
   @override
@@ -42,7 +45,12 @@ class ManagerExpensesScreen extends StatefulWidget {
 class _ManagerExpensesScreenState extends State<ManagerExpensesScreen> {
   late final ExpenseRepository _expenses =
       widget.expenseRepository ?? ExpenseRepository();
+  late final ApprovalsRepository _approvals =
+      widget.approvalsRepository ?? ApprovalsRepository();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  /// Claims the caller may decide; null while unknown or when it could not be read (the badge then shows "-").
+  int? approvalsCount;
 
   String activeAction =
       'none'; // none, my_expenses, submit, approvals, all_claims
@@ -76,7 +84,30 @@ class _ManagerExpensesScreenState extends State<ManagerExpensesScreen> {
       claimsFailed = true;
     }
     if (mounted) setState(() => loading = false);
+    _loadApprovalsCount();
   }
+
+  Future<void> _loadApprovalsCount() async {
+    if (!_isApprover) return;
+    try {
+      final n = await ExpenseApprovalsPanel.countActionable(
+        approvalsRepository: _approvals,
+        expenseRepository: _expenses,
+      );
+      if (mounted) setState(() => approvalsCount = n);
+    } catch (_) {
+      if (mounted) setState(() => approvalsCount = null);
+    }
+  }
+
+  bool get _isApprover => const [
+    'manager',
+    'reviewer',
+    'hr',
+    'hr_manager',
+    'hr_head',
+    'admin',
+  ].contains(widget.userData['emp_role']?.toString().toLowerCase());
 
   @override
   Widget build(BuildContext context) {
@@ -214,6 +245,7 @@ class _ManagerExpensesScreenState extends State<ManagerExpensesScreen> {
             const Color(0xFFFFECE6),
             'approvals',
             unknownBadge: true,
+            badgeText: approvalsCount == null ? '-' : '$approvalsCount',
           ),
         if (isAdmin)
           _actionCard(
@@ -235,6 +267,7 @@ class _ManagerExpensesScreenState extends State<ManagerExpensesScreen> {
     Color color,
     String action, {
     bool unknownBadge = false,
+    String badgeText = '-',
   }) {
     return InkWell(
       onTap: () => setState(() => activeAction = action),
@@ -279,9 +312,9 @@ class _ManagerExpensesScreenState extends State<ManagerExpensesScreen> {
                         color: Colors.grey.shade500,
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Text(
-                        "-",
-                        style: TextStyle(
+                      child: Text(
+                        badgeText,
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 10,
                           fontWeight: FontWeight.bold,
@@ -367,7 +400,10 @@ class _ManagerExpensesScreenState extends State<ManagerExpensesScreen> {
         break;
       case 'approvals':
         title = "Expense Approvals";
-        child = const InboxApprovalsPanel(module: 'expenses');
+        child = ExpenseApprovalsPanel(
+          approvalsRepository: _approvals,
+          expenseRepository: _expenses,
+        );
         break;
       case 'all_claims':
         title = "All Claims";
@@ -392,7 +428,12 @@ class _ManagerExpensesScreenState extends State<ManagerExpensesScreen> {
       padding: const EdgeInsets.all(20),
       decoration: const BoxDecoration(color: Colors.white),
       child: InkWell(
-        onTap: () => setState(() => activeAction = 'none'),
+        onTap: () {
+          final wasApprovals = activeAction == 'approvals';
+          setState(() => activeAction = 'none');
+          if (wasApprovals)
+            _loadApprovalsCount(); // a decision changed the queue
+        },
         child: Row(
           children: [
             const Icon(Icons.arrow_back, size: 18, color: Colors.blue),

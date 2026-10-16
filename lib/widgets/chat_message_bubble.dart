@@ -11,12 +11,22 @@ class ChatMessageBubble extends StatelessWidget {
   /// Opens private attachments. Without it an attachment is shown by name only and cannot be opened.
   final AttachmentUrlResolver? resolveUrl;
 
+  /// Whether the sender's name is shown above a message written by someone else (it is never shown on your own messages).
+  final bool showSenderName;
+
   const ChatMessageBubble({
     super.key,
     required this.message,
     required this.isMine,
     this.resolveUrl,
+    this.showSenderName = true,
   });
+
+  /// The name the server gives for the sender of [message], or null when it gives none.
+  static String? senderNameOf(Map<String, dynamic> message) {
+    final n = message['sender_name']?.toString().trim();
+    return (n == null || n.isEmpty) ? null : n;
+  }
 
   /// The message's file, from the API's `attachments[]` (first entry), or null for a plain text message.
   /// `ref` is the private `bucket/path` reference: it is never shown or opened directly.
@@ -53,6 +63,19 @@ class ChatMessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (!isMine && showSenderName && senderNameOf(message) != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  senderNameOf(message)!,
+                  key: const Key('chat-sender-name'),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF2F6FA8),
+                  ),
+                ),
+              ),
             if (attachment != null)
               AttachmentTile(
                 key: ValueKey(attachment.ref),

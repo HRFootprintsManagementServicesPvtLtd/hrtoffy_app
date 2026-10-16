@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hrms_app/repositories/approvals_repository.dart';
 import 'package:hrms_app/repositories/employee_repository.dart';
 import 'package:hrms_app/repositories/loans_repository.dart';
 import 'package:hrms_app/screens/manager/manager_loans_screen.dart';
@@ -28,6 +29,7 @@ Widget _screen(TestSession s) => MaterialApp(
         userData: const {'id': testEmployeeId, 'organization_id': testOrgId, 'emp_role': 'admin'},
         fetchHrmsContext: () async => {},
         loansRepository: LoansRepository(auth: s.auth),
+        approvalsRepository: ApprovalsRepository(auth: s.auth),
         employeeRepository: EmployeeRepository(auth: s.auth),
       ),
     );
@@ -76,6 +78,7 @@ Map<String, dynamic> _teamLoan(String id, String number, {String status = 'pendi
     };
 
 Future<TestSession> _session({
+  bool failMeta = false,
   Set<String> failing = const {},
   Set<String> failingTeam = const {},
   List<Map<String, dynamic>>? team,
@@ -86,6 +89,13 @@ Future<TestSession> _session({
   return signedIn((req) async {
     final path = req.url.path;
     if (req.method == 'POST' && path == '$_org/loans/request') return ok({'loanId': 'new-1', 'message': 'Loan request created'}, 201);
+    if (req.method == 'POST' && path == '$_org/workflows/module/loans/row-meta') {
+      if (failMeta) return _boom;
+      return ok({
+        't1': {'canApprove': true, 'requiredRole': 'manager'},
+        't2': {'canApprove': false, 'requiredRole': 'hr_manager'},
+      });
+    }
     if (req.method != 'GET') return jsonResponse({'success': false, 'error': {'message': 'unexpected write'}}, 500);
     if (failing.contains(path)) return _boom;
     switch (path) {
@@ -114,7 +124,7 @@ Future<void> _open(WidgetTester t, String card) async {
 }
 
 void main() {
-  testWidgets('renders with Supabase uninitialised; the approvals badge counts the open requests (pending and manager_approved)', (tester) async {
+  testWidgets('renders with Supabase uninitialised; the approvals badge counts the requests the engine lets the caller decide', (tester) async {
     _tall(tester);
     final s = await _session();
     await tester.pumpWidget(_screen(s));
@@ -122,13 +132,22 @@ void main() {
     for (final c in ['My Loans', 'Apply for Loan', 'EMI Schedule', 'Approvals', 'All Loans', 'HR Submit']) {
       expect(find.text(c), findsOneWidget, reason: c);
     }
-    expect(find.text('2'), findsOneWidget); // T-1 pending + T-2 manager_approved; T-3 is decided
+    expect(find.text('1'), findsOneWidget); // T-1 may be decided; T-2 waits for HR; T-3 is decided
     expect(find.text('-'), findsNothing);
   });
 
   testWidgets('the approvals badge is "-" while the team list cannot be loaded, never 0', (tester) async {
     _tall(tester);
     final s = await _session(failingTeam: {'$_org/loans'});
+    await tester.pumpWidget(_screen(s));
+    await _settle(tester);
+    expect(find.text('-'), findsOneWidget);
+    expect(find.text('0'), findsNothing);
+  });
+
+  testWidgets('the approvals badge is "-" when the engine answer fails, never 0', (tester) async {
+    _tall(tester);
+    final s = await _session(failMeta: true);
     await tester.pumpWidget(_screen(s));
     await _settle(tester);
     expect(find.text('-'), findsOneWidget);
@@ -154,6 +173,7 @@ void main() {
       'GET $_org/employees/me',
       'GET $_org/grade-structures/limits/G3',
       'GET $_org/loans',
+      'POST $_org/workflows/module/loans/row-meta',
     });
     final loanQueries = s.requests.where((r) => r.path == '$_org/loans').map((r) => r.query).toList();
     expect(loanQueries.where((q) => q.length == 1 && q['employeeId'] == testEmployeeId), hasLength(1)); // My Loans: own only
@@ -163,7 +183,7 @@ void main() {
     final emi = s.requests.firstWhere((r) => r.path == '$_org/loans/emi-schedule');
     expect(emi.method, 'GET');
     expect(emi.query, {'employeeId': testEmployeeId});
-    expect(s.requests.every((r) => r.method == 'GET'), isTrue);
+    expect(s.requests.every((r) => r.method == 'GET' || r.path.endsWith('/row-meta')), isTrue);
   });
 
   testWidgets('valid decimal amounts show; placeholder zero, null and missing amounts are "Not available", never ₹0', (tester) async {
@@ -301,11 +321,12 @@ void main() {
     await tester.pumpWidget(_screen(s));
     await _settle(tester);
     await _open(tester, 'Approvals');
-    expect(find.text('Needs My Action (2)'), findsOneWidget);
+    expect(find.text('Needs my action (1)'), findsOneWidget);
+    expect(find.text('Waiting on others (1)'), findsOneWidget);
     expect(find.text('T-1'), findsOneWidget);
-    expect(find.text('T-2'), findsOneWidget);
+    expect(find.text('T-2'), findsNothing);
     expect(find.text(kLoansUnavailableMessage), findsNothing);
-    expect(s.requests.every((r) => r.method == 'GET'), isTrue); // opening decides nothing
+    expect(s.requests.every((r) => r.method == 'GET' || r.path.endsWith('/row-meta')), isTrue); // opening decides nothing
   });
 
   testWidgets('Apply for Loan posts the request for the signed-in employee (no category) and reloads', (tester) async {
@@ -319,7 +340,7 @@ void main() {
     await tester.enterText(find.widgetWithText(TextFormField, 'Reason'), 'Laptop');
     await tester.tap(find.text('Submit request'));
     await _settle(tester);
-    final post = s.requests.firstWhere((r) => r.method == 'POST');
+    final post = s.requests.firstWhere((r) => r.method == 'POST' && !r.path.endsWith('/row-meta'));
     expect(post.path, '$_org/loans/request');
     expect(post.json, {'employeeId': testEmployeeId, 'amount': 15000.0, 'reason': 'Laptop'});
     expect(find.textContaining('Loan request submitted'), findsOneWidget);
@@ -344,8 +365,8 @@ void main() {
       await _settle(tester);
     }
     // Going back only refreshes the approvals badge (the team list); nothing else is requested.
-    expect(s.requests.skip(before).every((r) => r.method == 'GET' && r.path == '$_org/loans'), isTrue);
-    expect(s.requests.every((r) => r.method == 'GET'), isTrue);
+    expect(s.requests.skip(before).every((r) => (r.method == 'GET' && r.path == '$_org/loans') || r.path.endsWith('/row-meta')), isTrue);
+    expect(s.requests.every((r) => r.method == 'GET' || r.path.endsWith('/row-meta')), isTrue);
   });
 
   test('the screen has no Supabase, storage, edge function, workflow RPC, write or exception logging', () {
