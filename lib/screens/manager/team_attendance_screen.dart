@@ -7,7 +7,6 @@ import '../../repositories/manager_attendance_repository.dart';
 import '../../repositories/manager_repository.dart';
 import '../../widgets/drawer_route.dart';
 import '../../widgets/manager_drawer.dart';
-import 'widgets/ask_toffy_card.dart';
 import 'widgets/attendance_muster_table.dart';
 import 'widgets/employee_geo_dialog.dart';
 
@@ -352,8 +351,7 @@ class _TeamAttendanceScreenState extends State<TeamAttendanceScreen>
           children: [
             _buildPageHeader(),
             const SizedBox(height: 24),
-            const AskToffyCard(),
-            const SizedBox(height: 24),
+            // Ask Toffy is hidden for now (owner decision, 16 Oct 2026); AskToffyCard is kept for when it returns.
             if (_teamReady) ...[
               _buildDayBar(),
               const SizedBox(height: 16),
