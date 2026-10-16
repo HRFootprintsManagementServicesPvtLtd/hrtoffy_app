@@ -139,7 +139,7 @@ void main() {
 
   test('every manager screen is built through managerScreen(...) (no bypass added later)', () {
     final screens = RegExp(
-        r'\b(ManagerDashboardScreen|PendingApprovalsScreen|TeamAttendanceScreen|TimeHubScreen|ManagerBenefitsScreen|ManagerLoansScreen|ManagerExpensesScreen|ManagerTravelScreen|ManagerEngageScreen|ManagerComplianceScreen)\(');
+        r'\b(ManagerDashboardScreen|PendingApprovalsScreen|TeamAttendanceScreen|TimeHubScreen|ManagerBenefitsScreen|ManagerLoansScreen|ManagerExpensesScreen|ManagerTravelScreen|ManagerEngageScreen|ManagerComplianceScreen|ManagerDisciplinaryScreen)\(');
     final offenders = <String>[];
     for (final f in Directory('lib').listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {
       final lines = f.readAsLinesSync();
