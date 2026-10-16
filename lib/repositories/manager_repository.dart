@@ -50,8 +50,8 @@ class ManagerRepository extends BaseRepository {
       _listAll('managerId', me),
       _listAll('reviewerId', me),
     ]);
-    // Only people who work here now: a former employee still has a manager on record but is not part of the team.
-    bool current(Map<String, dynamic> m) => m['id'].toString() != me && (m['status'] ?? 'active').toString().toLowerCase() == 'active';
+    // Everyone with this manager on record, whatever their status: the website's My Team counts and lists them all (12), so the app does too.
+    bool current(Map<String, dynamic> m) => m['id'].toString() != me;
     final tree = results[0].where(current).toList();
     return ManagerTeam(
       direct: tree.where((m) => m['manager_id']?.toString() == me).toList(),

@@ -52,7 +52,7 @@ void main() {
     );
 
     test(
-      'former employees (status other than active) are not part of the team',
+      'everyone with this manager on record is on the team, whatever their status (as on the website)',
       () async {
         final s = await signedIn((req) async {
           if (req.url.queryParameters.containsKey('managerId')) {
@@ -70,8 +70,8 @@ void main() {
           return ok({'items': [], 'total': 0});
         });
         final team = await ManagerRepository(auth: s.auth).team();
-        expect(team.direct.map((m) => m['id']), ['d1']);
-        expect(team.treeIds, ['d1']);
+        expect(team.direct.map((m) => m['id']), ['d1', 'd2']);
+        expect(team.treeIds, ['d1', 'd2']);
       },
     );
 
