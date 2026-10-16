@@ -15,6 +15,7 @@ import '../screens/manager/manager_travel_screen.dart';
 import '../screens/manager/manager_engage_screen.dart';
 import '../screens/manager/manager_compliance_screen.dart';
 import '../screens/manager/manager_disciplinary_screen.dart';
+import '../screens/manager/manager_requisitions_screen.dart';
 import 'drawer_route.dart';
 
 import '../screens/manager/time_hub_screen.dart';
@@ -335,6 +336,23 @@ class _ManagerDrawerState extends State<ManagerDrawer> {
                       context,
                       MaterialPageRoute(
                         builder: (_) => managerScreenFor(ManagerFeature.disciplinary, () => ManagerDisciplinaryScreen(
+                          userEmail: widget.userEmail,
+                          userData: widget.userData,
+                          fetchHrmsContext: widget.fetchHrmsContext,
+                        )),
+                      ),
+                    );
+                  },
+                ),
+                _drawerItem(
+                  icon: Icons.work_outline_rounded,
+                  label: "Requisitions",
+                  route: DrawerRoute.requisitions,
+                  onTap: () {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => managerScreenFor(ManagerFeature.requisitions, () => ManagerRequisitionsScreen(
                           userEmail: widget.userEmail,
                           userData: widget.userData,
                           fetchHrmsContext: widget.fetchHrmsContext,

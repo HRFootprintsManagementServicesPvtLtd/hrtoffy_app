@@ -35,5 +35,6 @@ enum DrawerRoute {
   askToffy,
   engage,
   disciplinary,
+  requisitions,
   extendedModules,
 }

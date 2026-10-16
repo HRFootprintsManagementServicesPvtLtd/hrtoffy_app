@@ -14,6 +14,7 @@ enum ManagerFeature {
   engage,
   compliance,
   disciplinary,
+  requisitions,
 }
 
 /// Safety boundary for the manager/admin screens. A manager screen is switched on only once the AWS routes it
